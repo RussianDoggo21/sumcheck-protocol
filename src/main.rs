@@ -14,6 +14,7 @@ mod verifier;
 mod protocol;
 
 use protocol::sc_protocol;
+use utils::print_sc_poly_and_claim;
 
 fn main() {
     // poly(x_0, x_1, x_2) = 2*x_0 + x_0*x_2 + x_1*x_2
@@ -26,7 +27,10 @@ fn main() {
             (Fr::from(0), SparseTerm::new(vec![])),
         ],
     );
-    let gamma = Fr::from(10);
+    let gamma = Fr::from(12);
+
+    print_sc_poly_and_claim(&poly, gamma);
+
     sc_protocol(&poly, gamma);
 }
 

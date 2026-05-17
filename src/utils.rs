@@ -5,7 +5,8 @@ use ark_test_curves::bls12_381::Fr;
 
 // Polynomial poly
 use ark_poly::polynomial::multivariate::{SparsePolynomial, SparseTerm, Term};
-use ark_poly::{DenseMVPolynomial, Polynomial};
+use ark_poly::{DenseMVPolynomial, DenseUVPolynomial, Polynomial};
+use ark_poly::univariate::DensePolynomial;
 
 // Define the type of polynomial for the sumcheck protocol
 pub enum PolyType {
@@ -49,6 +50,8 @@ pub fn p_i_coeff(
     // a = Sum of evaluation of A(X_1, ..., X_i-1, X_i+1, ..., X_n) over (w_1, ..., w_i-1, x') with x' in H={0,1}^n-i
     // b = Sum of evaluation of B(X_1, ..., X_i-1, X_i+1, ..., X_n) over (w_1, ..., w_i-1, x') with x' in H={0,1}^n-i
 
+    //println!("Appel à p_i_coeff");
+
     let num_var_h = poly.num_vars - current_round - 1;
     // 1) Determine A(X) and B(X)
 
@@ -60,12 +63,21 @@ pub fn p_i_coeff(
     let mut b = Fr::from(0);
     for i in 0..num_points {
         let x = i_to_boolean_point(i, num_var_h);
+
+        // We clone all the challenges onto the evaluation point
         let mut eval_point = challenges.clone();
+
+        // We add a dummy value for the i-th variable
+        eval_point.push(Fr::from(0));
+
+        // Finally, we complete by one of the evaluations of the n-i variables over the hypercube
         eval_point.extend(x);
+        //println!("eval_point.len = {}, a_x.num_vars = {}, b_x.num_vars = {}", eval_point.len(), a_x.num_vars, b_x.num_vars);
         a += a_x.evaluate(&eval_point);
         b += b_x.evaluate(&eval_point);
     }
 
+    //println!("Fin de p_i_coeff");
     // 3) Return a and b
     (a, b)
 }
@@ -77,6 +89,7 @@ pub fn find_polynomial_coeff(
     SparsePolynomial<Fr, SparseTerm>,
     SparsePolynomial<Fr, SparseTerm>,
 ) {
+    //println!("Appel à find_polynomial_coeff");
     let mut a_terms: Vec<(Fr, SparseTerm)> = vec![];
     let mut b_terms: Vec<(Fr, SparseTerm)> = vec![];
 
@@ -111,9 +124,89 @@ pub fn find_polynomial_coeff(
     let a_x = SparsePolynomial::from_coefficients_vec(poly.num_vars, a_terms);
     let b_x = SparsePolynomial::from_coefficients_vec(poly.num_vars, b_terms);
 
+    //println!("Fin de find_polynomial_coeff");
     (a_x, b_x)
+    
 }
 
+/* ****************************************************************************************************************************************************************** */
+
+/// Print a univariate polynomail g_i(X) in an easy way to read (e.g.: 3*X + 5)
+pub fn print_univariate_dense_poly(g_i: &DensePolynomial<Fr>, round: usize) {
+    // In the multilinear case, g_i has at most 2 coefficients [b, a] for a*X + b
+    let coeffs = g_i.coeffs();
+    let b = coeffs.get(0).cloned().unwrap_or(Fr::from(0));
+    let a = coeffs.get(1).cloned().unwrap_or(Fr::from(0));
+    
+    println!("  g_{}(X_{}) = ({:?}) * X_{} + ({:?})", round, round, a, round, b);
+}
+
+/// Prints a multivariate sparse polynomial in a readable format (e.g., coeff * x_0^1 * x_2^1 + ...)
+pub fn print_multivariate_sparse_poly(poly: &SparsePolynomial<Fr, SparseTerm>) {
+    print!("poly(X) = ");
+    
+    // 1. We use &g_i.terms to borrow the data instead of moving it out of the polynomial.
+    // .enumerate() helps us track the index to format the "+" signs beautifully.
+    for (i, (coeff, term)) in poly.terms.iter().enumerate() {
+        
+        // Print the "+" separator between monomials, but not before the first one
+        if i > 0 {
+            print!(" + ");
+        }
+        
+        // Print the coefficient element from the finite field
+        if *coeff != Fr::from(1){
+            print!("{:?}*", coeff);
+        }
+       
+
+        let vars = term.vars();
+        let powers = term.powers();
+        
+        // 2. We use .zip() to safely iterate over variables and their corresponding powers simultaneously
+        for (i, (var, power)) in vars.iter().zip(powers.iter()).enumerate() {
+            match power {
+                1 => print!("x_{}", var),
+                _ => print!("x_{}^{}", var, power),
+            };
+            if i < vars.len() - 1 {
+                print!(".");
+            };
+        }   
+    }
+    println!(); // Print a newline at the very end
+}
+
+pub fn print_sc_poly_and_claim(poly : &SparsePolynomial<Fr, SparseTerm>, gamma : Fr){
+    print!("Polynomial to be evaluated : ");
+    print_multivariate_sparse_poly(poly);
+    println!("Claim : {:?}", gamma);
+}
+
+/// Print the details of a round for debugging
+pub fn print_round_status(round: usize, claim: Fr, g_i: &DensePolynomial<Fr>, challenges: &mut Vec<Fr>) {
+    println!();
+    println!("=== DEBUG ROUND {} ===", round + 1);
+    println!("  Current Claim V expects: {:?}", claim);
+    print!("  Current challenges : ");
+    match challenges.len(){
+        0 => println!("None (first round)"),
+        _ => for (i, challenge) in challenges.iter().enumerate() {
+            print!("w_{} = {:?}", i, challenge);
+            if i < challenges.len() - 1 {
+                print!(", ");
+            }
+        },
+    }
+    println!();
+    print_univariate_dense_poly(g_i, round);
+    
+    let eval_0 = g_i.evaluate(&Fr::from(0));
+    let eval_1 = g_i.evaluate(&Fr::from(1));
+    println!("  g_{}(0) = {:?}", round, eval_0);
+    println!("  g_{}(1) = {:?}", round, eval_1);
+    println!("  g_{}(0) + g_{}(1) = {:?}", round, round, eval_0 + eval_1);
+}
 /*
 /// Computes the Multilinear Extension (MLE) of a polynomial p_i
 /// by evaluating it on every point of the Boolean hypercube.

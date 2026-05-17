@@ -3,9 +3,9 @@
 use ark_test_curves::bls12_381::Fr;
 use ark_poly::polynomial::multivariate::{SparsePolynomial, SparseTerm};
 use ark_poly::univariate::DensePolynomial;
-use ark_poly::Polynomial;
+use ark_poly:: Polynomial;
 
-use crate::utils::{PolyType, poly_type};
+use crate::utils::{PolyType, poly_type, print_round_status};
 use crate::prover::prover_i;
 use crate::verifier::verifier_i;
 
@@ -19,6 +19,9 @@ pub fn sc_protocol(poly: &SparsePolynomial<Fr, SparseTerm>, gamma: Fr) -> bool {
     // Do the actual sumcheck protocol while precising the type of poly
     let mut challenges = vec![];
     let mut current_claim = gamma;
+
+    //print_sc_protocol_start(poly, poly_type, gamma);
+
     for round in 0..poly.num_vars {
         let check_round_i =
             sc_protocol_round(round, poly, &poly_type, &mut current_claim, &mut challenges);
@@ -26,6 +29,8 @@ pub fn sc_protocol(poly: &SparsePolynomial<Fr, SparseTerm>, gamma: Fr) -> bool {
             return false;
         }
     }
+
+    println!("Protocol OK");
     true
 }
 
@@ -45,6 +50,8 @@ pub fn sc_protocol_round(
     // g_i = mle(p_i)
     let g_i: DensePolynomial<Fr> = prover_i(current_round, poly, poly_type, challenges);
 
+    print_round_status(current_round, *current_claim, &g_i, challenges);
+
     // 2.1) V checks that Sum of g_i(X) over {0,1} is the current_claim (i.e g_i(0) + g_i(1) = current_claim)
     // 2.2) If that's the case, V sends a new challenge
     let w_i = match verifier_i(&g_i, *current_claim) {
@@ -62,3 +69,35 @@ pub fn sc_protocol_round(
     // 3.2) We also confirm that the verifier accepted the proof of the round
     true
 }
+
+/* 
+#[cfg(test)] // This module is only compiled when running 'cargo test'
+mod tests {
+    use super::*; // Allows access to sc_protocol and other functions in the outer module
+    use crate::utils::print_univariate_poly; 
+
+    #[test]
+    fn test_sumcheck_mle_3_vars() {
+        println!("\n--- Launching Sumcheck Protocol Test ---");
+        
+        // 1. Recreate your test polynomial: poly(x_0, x_1, x_2) = 2*x_0 + x_0*x_2 + x_1*x_2
+        let poly = SparsePolynomial::from_coefficients_vec(
+            3,
+            vec![
+                (Fr::from(2), SparseTerm::new(vec![(0, 1)])),
+                (Fr::from(1), SparseTerm::new(vec![(0, 1), (2, 1)])),
+                (Fr::from(1), SparseTerm::new(vec![(1, 1), (2, 1)])),
+            ],
+        ); 
+        
+        // Expected total sum over the Boolean hypercube {0,1}^3
+        let gamma = Fr::from(10); 
+        
+        // 2. Run the sumcheck protocol
+        let result = sc_protocol(&poly, gamma);
+        
+        // 3. The test passes if result is true, otherwise it panics with the message below
+        assert!(result, "The sumcheck protocol failed but it was expected to succeed!");
+    }
+}
+*/

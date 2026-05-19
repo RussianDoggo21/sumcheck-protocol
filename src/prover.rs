@@ -1,8 +1,8 @@
 // Contains the logic of the prover
-use ark_test_curves::bls12_381::Fr;
-use ark_poly::univariate::DensePolynomial;
-use ark_poly::polynomial::multivariate::{SparsePolynomial, SparseTerm};
 use ark_poly::DenseUVPolynomial;
+use ark_poly::polynomial::multivariate::{SparsePolynomial, SparseTerm};
+use ark_poly::univariate::DensePolynomial;
+use ark_test_curves::bls12_381::Fr;
 
 use crate::utils::{PolyType, p_i_coeff};
 

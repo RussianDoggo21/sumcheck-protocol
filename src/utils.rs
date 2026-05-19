@@ -5,8 +5,8 @@ use ark_test_curves::bls12_381::Fr;
 
 // Polynomial poly
 use ark_poly::polynomial::multivariate::{SparsePolynomial, SparseTerm, Term};
-use ark_poly::{DenseMVPolynomial, DenseUVPolynomial, Polynomial};
 use ark_poly::univariate::DensePolynomial;
+use ark_poly::{DenseMVPolynomial, DenseUVPolynomial, Polynomial};
 
 // Define the type of polynomial for the sumcheck protocol
 pub enum PolyType {
@@ -126,43 +126,43 @@ pub fn find_polynomial_coeff(
 
     //println!("Fin de find_polynomial_coeff");
     (a_x, b_x)
-    
 }
 
 /* ****************************************************************************************************************************************************************** */
 
 /// Print a univariate polynomail g_i(X) in an easy way to read (e.g.: 3*X + 5)
-pub fn print_univariate_dense_poly(g_i: &DensePolynomial<Fr>, round: usize) {
+pub fn print_univariate_dense_poly(p_i: &DensePolynomial<Fr>, round: usize) {
     // In the multilinear case, g_i has at most 2 coefficients [b, a] for a*X + b
-    let coeffs = g_i.coeffs();
+    let coeffs = p_i.coeffs();
     let b = coeffs.get(0).cloned().unwrap_or(Fr::from(0));
     let a = coeffs.get(1).cloned().unwrap_or(Fr::from(0));
-    
-    println!("  g_{}(X_{}) = ({:?}) * X_{} + ({:?})", round, round, a, round, b);
+
+    println!(
+        "  g_{}(X_{}) = ({:?}) * X_{} + ({:?})",
+        round, round, a, round, b
+    );
 }
 
 /// Prints a multivariate sparse polynomial in a readable format (e.g., coeff * x_0^1 * x_2^1 + ...)
 pub fn print_multivariate_sparse_poly(poly: &SparsePolynomial<Fr, SparseTerm>) {
-    print!("poly(X) = ");
-    
+    print!("  poly(X) = ");
+
     // 1. We use &g_i.terms to borrow the data instead of moving it out of the polynomial.
     // .enumerate() helps us track the index to format the "+" signs beautifully.
     for (i, (coeff, term)) in poly.terms.iter().enumerate() {
-        
         // Print the "+" separator between monomials, but not before the first one
         if i > 0 {
             print!(" + ");
         }
-        
+
         // Print the coefficient element from the finite field
-        if *coeff != Fr::from(1){
+        if *coeff != Fr::from(1) {
             print!("{:?}*", coeff);
         }
-       
 
         let vars = term.vars();
         let powers = term.powers();
-        
+
         // 2. We use .zip() to safely iterate over variables and their corresponding powers simultaneously
         for (i, (var, power)) in vars.iter().zip(powers.iter()).enumerate() {
             match power {
@@ -172,40 +172,82 @@ pub fn print_multivariate_sparse_poly(poly: &SparsePolynomial<Fr, SparseTerm>) {
             if i < vars.len() - 1 {
                 print!(".");
             };
-        }   
+        }
     }
     println!(); // Print a newline at the very end
 }
 
-pub fn print_sc_poly_and_claim(poly : &SparsePolynomial<Fr, SparseTerm>, gamma : Fr){
-    print!("Polynomial to be evaluated : ");
+pub fn print_sc_poly_and_claim(poly: &SparsePolynomial<Fr, SparseTerm>, gamma: Fr) {
+    print!("\nPolynomial to be evaluated : ");
     print_multivariate_sparse_poly(poly);
     println!("Claim : {:?}", gamma);
 }
 
 /// Print the details of a round for debugging
-pub fn print_round_status(round: usize, claim: Fr, g_i: &DensePolynomial<Fr>, challenges: &mut Vec<Fr>) {
+pub fn print_round_status(
+    round: usize,
+    old_claim: Fr,
+    new_claim: Fr,
+    p_i: &DensePolynomial<Fr>,
+    updated_challenges: &mut Vec<Fr>,
+) {
     println!();
-    println!("=== DEBUG ROUND {} ===", round + 1);
-    println!("  Current Claim V expects: {:?}", claim);
+    println!("=== DEBUG ROUND {} ===", round);
+    
+    println!("  Current Claim V expects: {:?}", old_claim);
     print!("  Current challenges : ");
-    match challenges.len(){
+
+    // updated_challenges is the vector of challenges updated AFTER each round 
+    // so updated_challenges contain 1 more challenge than the ones we want to print
+    let old_challenges = &updated_challenges[0..updated_challenges.len()-1];
+    match old_challenges.len() {
         0 => println!("None (first round)"),
-        _ => for (i, challenge) in challenges.iter().enumerate() {
-            print!("w_{} = {:?}", i, challenge);
-            if i < challenges.len() - 1 {
-                print!(", ");
+        _ => {
+            for (i, challenge) in old_challenges.iter().enumerate() {
+                print!("w_{} = {:?}", i, challenge);
+                if i < old_challenges.len() - 1 {
+                    print!(", ");
+                }
             }
-        },
+        }
     }
     println!();
-    print_univariate_dense_poly(g_i, round);
-    
-    let eval_0 = g_i.evaluate(&Fr::from(0));
-    let eval_1 = g_i.evaluate(&Fr::from(1));
+    print_univariate_dense_poly(p_i, round);
+
+    let eval_0 = p_i.evaluate(&Fr::from(0));
+    let eval_1 = p_i.evaluate(&Fr::from(1));
     println!("  g_{}(0) = {:?}", round, eval_0);
     println!("  g_{}(1) = {:?}", round, eval_1);
     println!("  g_{}(0) + g_{}(1) = {:?}", round, round, eval_0 + eval_1);
+
+    println!(
+        "  Next claim : g_{}({:?}) = {:?}",
+        round,
+        updated_challenges[updated_challenges.len()-1],
+        new_claim
+    );
+}
+
+/// Print the final check of the sumcheck protocol
+pub fn print_final_round_status(final_claim : Fr, challenges: &mut Vec<Fr>, poly: &SparsePolynomial<Fr, SparseTerm> ){
+
+    println!();
+    println!("=== DEBUG OF FINAL ROUND ===");
+    
+    println!("  Final claim to check by V {:?}", final_claim);
+    print!("  Current challenges : ");
+
+
+    for (i, challenge) in challenges.iter().enumerate() {
+        print!("w_{} = {:?}", i, challenge);
+        if i < challenges.len() - 1 {
+            print!(", ");
+        }
+    }
+    
+    println!();
+    print_multivariate_sparse_poly(poly);
+    println!("  Final evaluation : poly(w_0,...,w_{}) = {:?}", poly.num_vars-1, poly.evaluate(&challenges));
 }
 /*
 /// Computes the Multilinear Extension (MLE) of a polynomial p_i

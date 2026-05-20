@@ -7,6 +7,13 @@ use ark_test_curves::bls12_381::Fr;
 use ark_poly::polynomial::multivariate::{SparsePolynomial, SparseTerm, Term};
 use ark_poly::univariate::DensePolynomial;
 use ark_poly::{DenseMVPolynomial, DenseUVPolynomial, Polynomial};
+use ark_poly::DenseMultilinearExtension;
+
+use ark_linear_sumcheck::ml_sumcheck::data_structures::ListOfProductsOfPolynomials;
+use ark_std::rc::Rc;
+use ark_std::rand::Rng;
+
+use itertools::Itertools;
 
 // For debugging
 use std::fmt::Write;
@@ -131,6 +138,93 @@ pub fn find_polynomial_coeff(
     (a_x, b_x)
 }
 
+pub fn generate_sparse_poly<R: Rng>(rng : &mut R) -> SparsePolynomial<Fr, SparseTerm>{
+
+    // Number of variables
+    let n: usize = rng.gen_range(2..=10);
+
+    // Generation of all monomial possibles
+    let mut all_monomials: Vec<Vec<usize>> = (0..n).powerset().collect();
+
+    // Number of monomials
+    let num_monomial = rng.gen_range(2..=10);
+    let mut terms = Vec::with_capacity(num_monomial);
+
+    // Generating each monomial (coeff, terms) on the fly
+    for _ in 1..num_monomial {
+        // Coefficient
+        let coeff = Fr::from(rng.gen_range(1..=10));
+
+        // Terms
+        let term = if let Some(var_index_vec) = all_monomials.pop() {
+            // Generation of the vector (coeff, term)
+            // with term being itself a vector of (index, power)
+            // In our case power is always equal to 1
+            let term_vec: Vec<(usize, usize)> = var_index_vec
+                .into_iter()
+                .map(|index_var| (index_var, 1)) // Transform each index into (index, 1)
+                .collect(); // Gather everything into a Vec
+
+            // 3. Create the SparseTerm
+            SparseTerm::new(term_vec)
+        } else {
+            continue;
+        };
+        terms.push((coeff, term));
+    }
+
+    SparsePolynomial::from_coefficients_vec(n, terms)
+}
+
+
+/// Compute the evaluations of a sparse polynomial on the binary hypercube 
+pub fn generate_evaluations_from_poly(poly: &SparsePolynomial<Fr, SparseTerm>) -> Vec<Fr> {
+    let num_vars = poly.num_vars;
+    let total_evals = 2_usize.pow(num_vars as u32);
+    let mut evaluations = Vec::with_capacity(total_evals);
+
+    for i in 0..total_evals {
+        let mut point = Vec::with_capacity(num_vars);
+        for j in 0..num_vars {
+            // Extrait le j-ème bit de i (0 ou 1)
+            let bit = (i >> j) & 1;
+            point.push(Fr::from(bit as u64));
+        }
+        // Évalue le polynôme sur ce point de l'hypercube
+        evaluations.push(poly.evaluate(&point));
+    }
+
+    evaluations
+}
+
+pub fn generate_poly_test<R: Rng>(rng : &mut R) -> (SparsePolynomial<Fr,SparseTerm> ,ListOfProductsOfPolynomials<Fr>){
+    let poly0 = generate_sparse_poly(rng);
+    let num_vars = poly0.num_vars;
+    let evaluations = generate_evaluations_from_poly(&poly0);
+    let poly1 = DenseMultilinearExtension::from_evaluations_vec(num_vars, evaluations);
+    let poly_rc = Rc::new(poly1); // Smart pointers used by Arkworks API
+    let mut list_of_products = ListOfProductsOfPolynomials::new(num_vars); // List of products of multilinear polynomials required by Arkworks API
+    list_of_products.add_product(
+        vec![poly_rc], // Here, only one product, composed of our unique polynomial
+        Fr::from(1u64) // Coefficient 1
+    );
+    (poly0, list_of_products)
+}
+
+/// Helper function to automatically compute the sum of a polynomial over the Boolean hypercube {0,1}^n
+pub fn compute_hypercube_sum(poly: &SparsePolynomial<Fr, SparseTerm>) -> Fr {
+    let num_points = 1 << poly.num_vars; // 2^n points
+    let mut sum = Fr::from(0);
+
+    for i in 0..num_points {
+        // Generate the i-th point of the hypercube (e.g., [0, 1, 0])
+        let point = i_to_boolean_point(i, poly.num_vars);
+        // Evaluate the polynomial at this specific point and add it to the total
+        sum += poly.evaluate(&point);
+    }
+    sum
+}
+
 /* ****************************************************************************************************************************************************************** */
 
 /// Print a univariate polynomail g_i(X) in an easy way to read (e.g.: 3*X + 5)
@@ -161,7 +255,7 @@ pub fn format_multivariate_sparse_poly(poly: &SparsePolynomial<Fr, SparseTerm>) 
 
         // Print the coefficient element from the finite field
         if *coeff != Fr::from(1) {
-            let _ = write!(buffer, "{:?}*", coeff);
+            let _ = write!(buffer, "{}*", ark_ff::PrimeField::into_bigint(*coeff));
         }
 
         let vars = term.vars();
@@ -174,7 +268,7 @@ pub fn format_multivariate_sparse_poly(poly: &SparsePolynomial<Fr, SparseTerm>) 
                     let _ = write!(buffer, "x_{}", var);
                 },
                 _ => {
-                    let _ = write !(buffer, "x_{}^{}", var, power);
+                    let _ = write!(buffer, "x_{}^{}", var, power);
                 },
             };
             if i < vars.len() - 1 {

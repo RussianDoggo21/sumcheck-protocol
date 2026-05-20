@@ -4,10 +4,12 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-ark-ff = { version = "0.6.0", features = [ "asm" ] }
-ark-test-curves = { version = "0.6.0", features = ["bls12_381_scalar_field", "bls12_381_curve"] }
-ark-std = "0.6.0"
-ark-poly = "0.6.0"
+ark-ff = { version = "0.4.0", features = [ "asm" ] }
+ark-test-curves = { version = "0.4.0", features = ["bls12_381_scalar_field", "bls12_381_curve"] }
+ark-std = "0.4.0"
+ark-poly = "0.4.0"
+ark-linear-sumcheck = "0.4.0"
+
 itertools = "0.14.0"
 rand = "0.8.6"
 tracing = "0.1.44"

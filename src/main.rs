@@ -1,11 +1,7 @@
 // First implementation of sumcheck protocol using arkworks
 
-// Finite field F
-use ark_test_curves::bls12_381::Fr;
-
-// Polynomial poly
-use ark_poly::DenseMVPolynomial;
-use ark_poly::polynomial::multivariate::{SparsePolynomial, SparseTerm, Term};
+// Arkworks API for sumcheck
+use ark_linear_sumcheck::ml_sumcheck::MLSumcheck;
 
 // Timer
 use std::time::Instant;
@@ -17,26 +13,41 @@ mod improved;
 
 use naive::protocol::sc_protocol as sc_protocol_naive;
 
+use crate::utils::{compute_hypercube_sum, format_multivariate_sparse_poly, generate_poly_test};
+
 fn main() {
-    // poly(x_0, x_1, x_2) = 2*x_0 + x_0*x_2 + x_1*x_2
-
-    let poly = SparsePolynomial::from_coefficients_vec(
-        3,
-        vec![
-            (Fr::from(2), SparseTerm::new(vec![(0, 1)])),
-            (Fr::from(1), SparseTerm::new(vec![(0, 1), (2, 1)])),
-            (Fr::from(1), SparseTerm::new(vec![(1, 1), (2, 1)])),
-            (Fr::from(0), SparseTerm::new(vec![])),
-        ],
-    );
-    let gamma = Fr::from(12);
-    let mut rng = rand::thread_rng();
-
-    println!("Starting naive protocol");
-    let start_naive = Instant::now();
-    sc_protocol_naive(&poly, gamma, &mut rng);
-    let duration_naive = start_naive.elapsed();
-    println!("Naive protocol OK \nTime = {:?} ", duration_naive);
+    test(3);
 }
 
-// To run the tests :  cargo test 
+fn test(number_of_tests : usize){
+
+    for i in 0..number_of_tests {
+        println!("\n==================================================== Test {} ====================================================", i+1);
+        let mut rng = rand::thread_rng();
+        let (poly0, list_of_products) = generate_poly_test(&mut rng); 
+        println!("{}\n", format_multivariate_sparse_poly(&poly0));
+    /* ************************************************************************************************************************************************************** */   
+        
+        println!("Starting naive protocol");
+        let gamma = compute_hypercube_sum(&poly0);
+        let start_naive = Instant::now();
+        sc_protocol_naive(&poly0, gamma, &mut rng);
+        let duration_naive = start_naive.elapsed();
+        println!("Naive protocol OK \nTime = {:?} ", duration_naive);
+        println!("Computed sum = {}\n", gamma);
+
+    /*************************************************************************************************************************************************************** */
+
+        println!("Starting arkworks protocol");
+        let start_arkworks = Instant::now();
+        let proof = MLSumcheck::prove(&list_of_products)
+            .expect("The arkworks prover failed");
+        let duration_arkworks = start_arkworks.elapsed();
+        let claimed_sum = MLSumcheck::extract_sum(&proof);
+        println!("Arkworks protocol OK \nTime = {:?}", duration_arkworks);
+        println!("Computed sum = {}",  ark_ff::PrimeField::into_bigint(claimed_sum));
+    /* ************************************************************************************************************************************************************** */
+
+    }
+}
+// To run more tests on the naive protocol :  cargo test 

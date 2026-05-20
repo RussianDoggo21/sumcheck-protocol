@@ -7,13 +7,15 @@ use ark_test_curves::bls12_381::Fr;
 use ark_poly::DenseMVPolynomial;
 use ark_poly::polynomial::multivariate::{SparsePolynomial, SparseTerm, Term};
 
-// Modules import
-mod protocol;
-mod prover;
-mod utils;
-mod verifier;
+// Timer
+use std::time::Instant;
 
-use protocol::sc_protocol;
+// Modules import
+mod utils;
+mod naive;
+mod improved;
+
+use naive::protocol::sc_protocol as sc_protocol_naive;
 
 fn main() {
     // poly(x_0, x_1, x_2) = 2*x_0 + x_0*x_2 + x_1*x_2
@@ -30,7 +32,11 @@ fn main() {
     let gamma = Fr::from(12);
     let mut rng = rand::thread_rng();
 
-    sc_protocol(&poly, gamma, &mut rng);
+    println!("Starting naive protocol");
+    let start_naive = Instant::now();
+    sc_protocol_naive(&poly, gamma, &mut rng);
+    let duration_naive = start_naive.elapsed();
+    println!("Naive protocol OK \nTime = {:?} ", duration_naive);
 }
 
-// To run the tests :  cargo test -- --nocapture
+// To run the tests :  cargo test 

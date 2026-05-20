@@ -6,9 +6,9 @@ use ark_poly::univariate::DensePolynomial;
 use ark_std::rand::Rng;
 use ark_test_curves::bls12_381::Fr;
 
-use crate::prover::prover_i;
+use crate::naive::prover::prover_i;
 use crate::utils::{PolyType, poly_type, format_univariate_dense_poly, format_multivariate_sparse_poly};//, print_round_status, print_final_round_status};
-use crate::verifier::{verifier_final, verifier_i};
+use crate::naive::verifier::{verifier_final, verifier_i};
 
 // For debugging
 use tracing::debug;
@@ -45,7 +45,6 @@ pub fn sc_protocol<R: Rng>(
         }
     }
 
-    println!("\n  Protocol OK: The prover has successfully proven the sum!");
     true
 }
 

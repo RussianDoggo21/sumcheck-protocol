@@ -10,3 +10,7 @@ ark-std = "0.6.0"
 ark-poly = "0.6.0"
 itertools = "0.14.0"
 rand = "0.8.6"
+tracing = "0.1.44"
+
+[dev-dependencies]
+tracing-subscriber = {version = "0.3.23", features = ["env-filter"]}

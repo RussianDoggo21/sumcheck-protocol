@@ -8,6 +8,9 @@ use ark_poly::polynomial::multivariate::{SparsePolynomial, SparseTerm, Term};
 use ark_poly::univariate::DensePolynomial;
 use ark_poly::{DenseMVPolynomial, DenseUVPolynomial, Polynomial};
 
+// For debugging
+use std::fmt::Write;
+
 // Define the type of polynomial for the sumcheck protocol
 pub enum PolyType {
     Multilinear,
@@ -131,33 +134,34 @@ pub fn find_polynomial_coeff(
 /* ****************************************************************************************************************************************************************** */
 
 /// Print a univariate polynomail g_i(X) in an easy way to read (e.g.: 3*X + 5)
-pub fn print_univariate_dense_poly(p_i: &DensePolynomial<Fr>, round: usize) {
+pub fn format_univariate_dense_poly(p_i: &DensePolynomial<Fr>, round: usize) -> String {
     // In the multilinear case, g_i has at most 2 coefficients [b, a] for a*X + b
     let coeffs = p_i.coeffs();
     let b = coeffs.get(0).cloned().unwrap_or(Fr::from(0));
     let a = coeffs.get(1).cloned().unwrap_or(Fr::from(0));
 
-    println!(
-        "  g_{}(X_{}) = ({:?}) * X_{} + ({:?})",
+    format!(
+        "p_{}(X_{}) = ({:?}) * X_{} + ({:?})",
         round, round, a, round, b
-    );
+    )
 }
 
 /// Prints a multivariate sparse polynomial in a readable format (e.g., coeff * x_0^1 * x_2^1 + ...)
-pub fn print_multivariate_sparse_poly(poly: &SparsePolynomial<Fr, SparseTerm>) {
-    print!("  poly(X) = ");
+pub fn format_multivariate_sparse_poly(poly: &SparsePolynomial<Fr, SparseTerm>) -> String {
+    let mut buffer = String::new();
+    let _ = write!(buffer, "poly(X) = ");
 
     // 1. We use &g_i.terms to borrow the data instead of moving it out of the polynomial.
     // .enumerate() helps us track the index to format the "+" signs beautifully.
     for (i, (coeff, term)) in poly.terms.iter().enumerate() {
         // Print the "+" separator between monomials, but not before the first one
         if i > 0 {
-            print!(" + ");
+           let _ = write!(buffer, " + ");
         }
 
         // Print the coefficient element from the finite field
         if *coeff != Fr::from(1) {
-            print!("{:?}*", coeff);
+            let _ = write!(buffer, "{:?}*", coeff);
         }
 
         let vars = term.vars();
@@ -166,17 +170,23 @@ pub fn print_multivariate_sparse_poly(poly: &SparsePolynomial<Fr, SparseTerm>) {
         // 2. We use .zip() to safely iterate over variables and their corresponding powers simultaneously
         for (i, (var, power)) in vars.iter().zip(powers.iter()).enumerate() {
             match power {
-                1 => print!("x_{}", var),
-                _ => print!("x_{}^{}", var, power),
+                1 => {
+                    let _ = write!(buffer, "x_{}", var);
+                },
+                _ => {
+                    let _ = write !(buffer, "x_{}^{}", var, power);
+                },
             };
             if i < vars.len() - 1 {
-                print!(".");
+                let _ = write!(buffer, ".");
             };
         }
     }
-    println!(); // Print a newline at the very end
+
+    buffer
 }
 
+/* 
 pub fn print_sc_poly_and_claim(poly: &SparsePolynomial<Fr, SparseTerm>, gamma: Fr) {
     print!("\nPolynomial to be evaluated : ");
     print_multivariate_sparse_poly(poly);
@@ -249,6 +259,8 @@ pub fn print_final_round_status(final_claim : Fr, challenges: &mut Vec<Fr>, poly
     print_multivariate_sparse_poly(poly);
     println!("  Final evaluation : poly(w_0,...,w_{}) = {:?}", poly.num_vars-1, poly.evaluate(&challenges));
 }
+
+*/
 /*
 /// Computes the Multilinear Extension (MLE) of a polynomial p_i
 /// by evaluating it on every point of the Boolean hypercube.

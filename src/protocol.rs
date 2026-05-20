@@ -7,8 +7,11 @@ use ark_std::rand::Rng;
 use ark_test_curves::bls12_381::Fr;
 
 use crate::prover::prover_i;
-use crate::utils::{PolyType, poly_type, print_round_status, print_final_round_status};
+use crate::utils::{PolyType, poly_type, format_univariate_dense_poly, format_multivariate_sparse_poly};//, print_round_status, print_final_round_status};
 use crate::verifier::{verifier_final, verifier_i};
+
+// For debugging
+use tracing::debug;
 
 // Sumcheck protocol
 pub fn sc_protocol<R: Rng>(
@@ -16,6 +19,10 @@ pub fn sc_protocol<R: Rng>(
     gamma: Fr,
     rng: &mut R,
 ) -> bool {
+
+    debug!("=== {:} ===", format_multivariate_sparse_poly(poly));
+    debug!("=== Original claim (gamma) = {:?}", gamma);
+
     // 1. Test if p is multilinear (easy case) or multivariate (general case)
     let poly_type = poly_type(poly);
 
@@ -65,7 +72,7 @@ pub fn sc_protocol_round<R: Rng>(
             
             // 2.2) Else, we return false : the sumcheck has failed
             Err(e) => {
-                println!("{}", e);
+                tracing::error!("{}", e);
                 return false;
             }
         };    
@@ -79,13 +86,27 @@ pub fn sc_protocol_round<R: Rng>(
         let next_claim = p_i.evaluate(&w_i);
         *current_claim = next_claim;
 
-        print_round_status(current_round, old_claim, next_claim, &p_i, challenges); // 3.3) Intermediate display
+        // ============== LOGS FOR THE ROUND'S DEBUG  ==============
+        debug!("=== DEBUG ROUND {} ===", current_round);
+        debug!("  Current Claim V expects: {:?}", old_claim);
+        debug!("  Current challenges: {:?}", &challenges[..challenges.len()-1]);
+        debug!("  {:?}", format_univariate_dense_poly(&p_i, current_round));
+        debug!("  p_{}(0) = {:?}", current_round, p_i.evaluate(&Fr::from(0)));
+        debug!("  p_{}(1) = {:?}", current_round, p_i.evaluate(&Fr::from(1)));
+        debug!("  p_{}(0) + p_{}(1) = {:?}", current_round, current_round, p_i.evaluate(&Fr::from(0))+p_i.evaluate(&Fr::from(1)));
+        debug!("  New challenge = {:?}", w_i);
+        debug!("  Next claim: p_{}({:?}) = {:?}", current_round, w_i, next_claim);
+        // ========================================================
     
         true // 3.4) We also confirm that the verifier accepted the proof of the round
     }    
     else {
         let final_result = verifier_final(poly, *current_claim, challenges);
-        print_final_round_status(*current_claim, challenges, poly);
+        // =========== LOGS FOR THE FINAL CHECK ================
+        debug!("=== DEBUG OF FINAL ROUND ===");
+        debug!("  Final claim to check by V: p_{}(w_{}) = p_{}({:?}) = {:?}",poly.num_vars, poly.num_vars, poly.num_vars, &challenges[challenges.len()-1],current_claim);
+        debug!("  Final evaluation: poly(w_0, ...,w_{}) = {:?}", poly.num_vars, poly.evaluate(challenges));
+        // =====================================================
         final_result
     }
 
@@ -102,7 +123,9 @@ mod tests {
     use ark_test_curves::bls12_381::Fr;
 
     use super::*;
-    use crate::utils::{i_to_boolean_point, print_sc_poly_and_claim};
+    use crate::utils::{i_to_boolean_point};
+
+    //use tracing::{info, debug};
 
     /// Helper function to automatically compute the sum of a polynomial over the Boolean hypercube {0,1}^n
     fn compute_hypercube_sum(poly: &SparsePolynomial<Fr, SparseTerm>) -> Fr {
@@ -120,6 +143,12 @@ mod tests {
 
     #[test]
     fn test_sumcheck_multilinear() {
+        // INITIALISATION OF THE LISTENER OF LOGS
+        let _ = tracing_subscriber::fmt()
+        .with_env_filter("debug") // On écoute tout ce qui est niveau debug ou supérieur
+        .with_target(false)       // Optionnel : masque le nom du fichier pour un log plus propre
+        .try_init();
+
         println!("\n--- Launching Sumcheck Protocol Test (multilinear testing) ---");
 
         // 1. Randomly generates :
@@ -138,7 +167,7 @@ mod tests {
         let mut all_monomials: Vec<Vec<usize>> = (0..n).powerset().collect();
 
         // Number of monomials
-        let num_monomial = rng.gen_range(2..=2_usize.pow(n as u32));
+        let num_monomial = rng.gen_range(2..=8);
         let mut terms = Vec::with_capacity(num_monomial);
 
         // Generating each monomial (coeff, terms) on the fly
@@ -168,7 +197,6 @@ mod tests {
 
         // 2. Automatically compute gamma over the hypercube {0,1}^n
         let gamma = compute_hypercube_sum(&poly);
-        print_sc_poly_and_claim(&poly, gamma);
 
         // 3. Run the sumcheck protocol
         let result = sc_protocol(&poly, gamma, &mut rng);

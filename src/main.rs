@@ -14,7 +14,6 @@ mod utils;
 mod verifier;
 
 use protocol::sc_protocol;
-use utils::print_sc_poly_and_claim;
 
 fn main() {
     // poly(x_0, x_1, x_2) = 2*x_0 + x_0*x_2 + x_1*x_2
@@ -31,7 +30,6 @@ fn main() {
     let gamma = Fr::from(12);
     let mut rng = rand::thread_rng();
 
-    print_sc_poly_and_claim(&poly, gamma);
     sc_protocol(&poly, gamma, &mut rng);
 }
 

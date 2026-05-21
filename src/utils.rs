@@ -197,6 +197,26 @@ pub fn generate_evaluations_from_poly(poly: &SparsePolynomial<Fr, SparseTerm>) -
     evaluations
 }
 
+/// Génère le vecteur d'évaluations brutes directement au format u64 pour le prouveur optimisé
+pub fn generate_small_evaluations_from_poly(poly: &SparsePolynomial<Fr, SparseTerm>) -> Vec<u64> {
+    let num_vars = poly.num_vars;
+    let total_evals = 2_usize.pow(num_vars as u32);
+    let mut evaluations = Vec::with_capacity(total_evals);
+
+    for i in 0..total_evals {
+        let mut point = Vec::with_capacity(num_vars);
+        for j in 0..num_vars {
+            let bit = (i >> j) & 1;
+            point.push(Fr::from(bit as u64));
+        }
+        let eval_fr = poly.evaluate(&point);
+        let eval_u64 = ark_ff::PrimeField::into_bigint(eval_fr).as_ref()[0];
+        evaluations.push(eval_u64);
+    }
+
+    evaluations
+}
+
 pub fn generate_poly_test<R: Rng>(rng : &mut R) -> (SparsePolynomial<Fr,SparseTerm> ,ListOfProductsOfPolynomials<Fr>){
     let poly0 = generate_sparse_poly(rng);
     let num_vars = poly0.num_vars;

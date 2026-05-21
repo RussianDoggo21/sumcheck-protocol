@@ -9,11 +9,14 @@ use std::time::Instant;
 // Modules import
 mod utils;
 mod naive;
-mod improved;
+mod improved {
+    pub mod arithmetic;
+    pub mod protocol;
+}
 
 use naive::protocol::sc_protocol as sc_protocol_naive;
-
-use crate::utils::{compute_hypercube_sum, format_multivariate_sparse_poly, generate_poly_test};
+use improved::protocol::sc_protocol_improved;
+use crate::utils::{compute_hypercube_sum, format_multivariate_sparse_poly, generate_poly_test, generate_small_evaluations_from_poly};
 
 fn main() {
     test(3);
@@ -45,9 +48,20 @@ fn test(number_of_tests : usize){
         let duration_arkworks = start_arkworks.elapsed();
         let claimed_sum = MLSumcheck::extract_sum(&proof);
         println!("Arkworks protocol OK \nTime = {:?}", duration_arkworks);
-        println!("Computed sum = {}",  ark_ff::PrimeField::into_bigint(claimed_sum));
+        println!("Computed sum = {}\n",  ark_ff::PrimeField::into_bigint(claimed_sum));
+
+    /* ************************************************************************************************************************************************************** */
+
+        println!("Starting optimized (Small-Value) protocol");
+        let evals_small = generate_small_evaluations_from_poly(&poly0);
+        let start_improved = Instant::now();
+        let (sum_improved, _proofs) = sc_protocol_improved(poly0.num_vars, &evals_small);
+        let duration_improved = start_improved.elapsed(); 
+        println!("Optimized protocol OK \nTime = {:?}", duration_improved);
+        println!("Computed sum = {}", sum_improved);
+
     /* ************************************************************************************************************************************************************** */
 
     }
 }
-// To run more tests on the naive protocol :  cargo test 
+// To run more tests on the naive protocol :  cargo test

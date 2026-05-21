@@ -19,10 +19,10 @@ use improved::protocol::sc_protocol_improved;
 use crate::utils::{compute_hypercube_sum, format_multivariate_sparse_poly, generate_poly_test, generate_small_evaluations_from_poly};
 
 fn main() {
-    test(3);
+    multilinear_test(3);
 }
 
-fn test(number_of_tests : usize){
+fn multilinear_test(number_of_tests : usize){
 
     for i in 0..number_of_tests {
         println!("\n==================================================== Test {} ====================================================", i+1);

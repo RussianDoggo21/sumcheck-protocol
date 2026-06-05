@@ -248,6 +248,7 @@ dependencies = [
  "ark-std",
  "ark-test-curves",
  "itertools 0.14.0",
+ "lazy_static",
  "rand",
  "tracing",
  "tracing-subscriber",

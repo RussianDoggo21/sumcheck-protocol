@@ -138,20 +138,19 @@ pub fn find_polynomial_coeff(
     (a_x, b_x)
 }
 
-pub fn generate_sparse_poly<R: Rng>(rng : &mut R) -> SparsePolynomial<Fr, SparseTerm>{
+pub fn generate_sparse_poly<R: Rng>(rng : &mut R, num_monomial : usize) -> SparsePolynomial<Fr, SparseTerm>{
 
-    // Number of variables
-    let n: usize = rng.gen_range(2..=10);
+    // Number of variables (arbitrary)
+    let n: usize = 10;
 
     // Generation of all monomial possibles
     let mut all_monomials: Vec<Vec<usize>> = (0..n).powerset().collect();
 
     // Number of monomials
-    let num_monomial = rng.gen_range(2..=10);
     let mut terms = Vec::with_capacity(num_monomial);
 
     // Generating each monomial (coeff, terms) on the fly
-    for _ in 1..num_monomial {
+    for _ in 0..num_monomial {
         // Coefficient
         let coeff = Fr::from(rng.gen_range(1..=10));
 
@@ -217,8 +216,8 @@ pub fn generate_small_evaluations_from_poly(poly: &SparsePolynomial<Fr, SparseTe
     evaluations
 }
 
-pub fn generate_poly_test<R: Rng>(rng : &mut R) -> (SparsePolynomial<Fr,SparseTerm> ,ListOfProductsOfPolynomials<Fr>){
-    let poly0 = generate_sparse_poly(rng);
+pub fn generate_poly_test<R: Rng>(rng : &mut R, num_monomial : usize) -> (SparsePolynomial<Fr,SparseTerm> ,ListOfProductsOfPolynomials<Fr>){
+    let poly0 = generate_sparse_poly(rng, num_monomial);
     let num_vars = poly0.num_vars;
     let evaluations = generate_evaluations_from_poly(&poly0);
     let poly1 = DenseMultilinearExtension::from_evaluations_vec(num_vars, evaluations);

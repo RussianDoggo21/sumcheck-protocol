@@ -13,6 +13,10 @@ ark-linear-sumcheck = "0.4.0"
 itertools = "0.14.0"
 rand = "0.8.6"
 tracing = "0.1.44"
+lazy_static = "1.5.0"
 
 [dev-dependencies]
 tracing-subscriber = {version = "0.3.23", features = ["env-filter"]}
+
+[profile.release]
+debug = true

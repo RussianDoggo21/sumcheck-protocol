@@ -105,9 +105,8 @@ fn multilinear_test(num_m : usize) -> (Duration, Duration, Duration){
 /* ************************************************************************************************************************************************************** */
 
     println!("\nStarting optimized (Small-Value) protocol");
-    let evals_small = generate_small_evaluations_from_poly(&poly0);
     let start_improved = Instant::now();
-    let (sum_improved, _proofs) = sc_protocol_improved(poly0.num_vars, &evals_small);
+    let (sum_improved, _proofs) = sc_protocol_improved(&poly0, &mut rng);
     let duration_improved = start_improved.elapsed(); 
     println!("Optimized protocol OK \nTime = {:?}", duration_improved);
 

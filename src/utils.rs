@@ -196,24 +196,43 @@ pub fn generate_evaluations_from_poly(poly: &SparsePolynomial<Fr, SparseTerm>) -
     evaluations
 }
 
-/// Génère le vecteur d'évaluations brutes directement au format u64 pour le prouveur optimisé
+/// Computes all the evaluations of poly over the hypercube {0,1}^num_vars
 pub fn generate_small_evaluations_from_poly(poly: &SparsePolynomial<Fr, SparseTerm>) -> Vec<u64> {
+
+    // Computes the number of total evaluations (2^num_vars)
+    // Initalize the vector evaluations accordingly
     let num_vars = poly.num_vars;
     let total_evals = 2_usize.pow(num_vars as u32);
-    let mut evaluations = Vec::with_capacity(total_evals);
+    let mut evaluations_over_hypercube = Vec::with_capacity(total_evals);
 
+    // Iterates over all the possible evaluations (from 0 to total_evals)
+    // Relies on the unicity between each integer (i) and its boolean representation (bit)
+    // i.e. (for num_vars = 3) : i = 0 => bit = 000; i = 1 => bit = 001
     for i in 0..total_evals {
+
+        // Generates the boolean representation of i (point)
         let mut point = Vec::with_capacity(num_vars);
         for j in 0..num_vars {
             let bit = (i >> j) & 1;
             point.push(Fr::from(bit as u64));
         }
-        let eval_fr = poly.evaluate(&point);
-        let eval_u64 = ark_ff::PrimeField::into_bigint(eval_fr).as_ref()[0];
-        evaluations.push(eval_u64);
+
+        let eval_fr = poly.evaluate(&point); // Evaluation of poly over point (Fr)
+        let eval_big_int = ark_ff::PrimeField::into_bigint(eval_fr); // Conversion into bigInt representation
+        let limbs = eval_big_int.as_ref(); // Conversion into an u64 array 
+
+        // Check to verify that we have indeed a small-value (u64)
+        // Only the first limb may be non-zero, all others must be null
+        assert!(
+            limbs[1..].iter().all(|&limb| limb == 0),
+            "Evaluation overflower over first limb ! Value is too big for Small-value optimization."
+        );
+
+        let eval_u64 = limbs[0]; // Conversion into u64
+        evaluations_over_hypercube.push(eval_u64);
     }
 
-    evaluations
+    evaluations_over_hypercube
 }
 
 pub fn generate_poly_test<R: Rng>(rng : &mut R, num_monomial : usize) -> (SparsePolynomial<Fr,SparseTerm> ,ListOfProductsOfPolynomials<Fr>){

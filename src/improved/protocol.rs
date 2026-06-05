@@ -1,30 +1,41 @@
+use ark_poly::polynomial::multivariate::{SparsePolynomial, SparseTerm};
 use ark_test_curves::bls12_381::Fr;
+use ark_std::rand::Rng;
 use crate::improved::arithmetic::fast_dot_product_strided;
+use crate::utils::generate_small_evaluations_from_poly;
 
 /// Optimized "Small-Value" Sumcheck protocol implementation for a multilinear polynomial
-pub fn sc_protocol_improved(num_vars: usize, small_evals: &[u64]) -> (Fr, Vec<(Fr, Fr)>) {
+pub fn sc_protocol_improved<R: Rng>(poly: &SparsePolynomial<Fr, SparseTerm>, rng : &mut R) -> (Fr, Vec<(Fr, Fr)>) {
+
+    // Computes all the evaluation of poly over the hypercube {0,1}^poly.num_vars
+    let small_evals = generate_small_evaluations_from_poly(poly);
+
+    // Initialize the vector that will hold the proof for the Sumcheck protocol
+    let num_vars = poly.num_vars;
     let mut proofs = Vec::with_capacity(num_vars);
     
     // Compute the initial total claimed sum using delayed reduction
     let mut total_sum_u128: u128 = 0;
-    for &val in small_evals {
+    for &val in &small_evals {
         total_sum_u128 += val as u128;
     }
     let claimed_sum = Fr::from(total_sum_u128);
 
-    // Fixed deterministic challenges for verification simulation
+    // Generation of random challenges for verification simulation
     let mut challenges = Vec::with_capacity(num_vars);
     for i in 0..num_vars {
-        challenges.push(Fr::from((i + 2) as u64));
+        challenges.push(Fr::from(rng.gen_range(0..=100))); // SUPPRIMER LA RANGE PLUS TARD ??
     }
+
+    // ================ OK JUSQU'ICI ==========================
 
     // --- ROUND 0: Pure Small-Value Optimization ---
     let half = small_evals.len() / 2;
     let coeffs = vec![Fr::from(1u64); half]; 
 
     // Accès direct par enjambement (stride = 2) : ZERO COPIE !
-    let p0_r0 = fast_dot_product_strided(small_evals, &coeffs, 0, 2);
-    let p1_r0 = fast_dot_product_strided(small_evals, &coeffs, 1, 2);
+    let p0_r0 = fast_dot_product_strided(&small_evals, &coeffs, 0, 2);
+    let p1_r0 = fast_dot_product_strided(&small_evals, &coeffs, 1, 2);
     proofs.push((p0_r0, p1_r0));
 
     // Combine evaluations using the first challenge to prepare Round 1

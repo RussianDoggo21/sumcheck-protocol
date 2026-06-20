@@ -4,6 +4,9 @@ use ark_std::rand::Rng;
 use crate::improved::arithmetic::fast_dot_product_strided;
 use crate::utils::generate_small_evaluations_from_poly;
 
+use crate::improved::engine;
+
+
 /// Optimized "Small-Value" Sumcheck protocol implementation for a multilinear polynomial
 pub fn sc_protocol_improved<R: Rng>(poly: &SparsePolynomial<Fr, SparseTerm>, rng : &mut R) -> (Fr, Vec<(Fr, Fr)>) {
 
@@ -23,7 +26,7 @@ pub fn sc_protocol_improved<R: Rng>(poly: &SparsePolynomial<Fr, SparseTerm>, rng
 
     // Generation of random challenges for verification simulation
     let mut challenges = Vec::with_capacity(num_vars);
-    for i in 0..num_vars {
+    for _ in 0..num_vars {
         challenges.push(Fr::from(rng.gen_range(0..=100))); // SUPPRIMER LA RANGE PLUS TARD ??
     }
 

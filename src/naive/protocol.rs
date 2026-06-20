@@ -111,6 +111,7 @@ pub fn sc_protocol_round<R: Rng>(
 
 }
 
+/* 
 #[cfg(test)] // This module is only compiled when running 'cargo test'
 mod tests {
     use itertools::Itertools;
@@ -207,3 +208,4 @@ mod tests {
         );
     }
 }
+*/

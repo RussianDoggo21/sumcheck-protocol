@@ -1,14 +1,12 @@
-use ark_test_curves::bls12_381::Fr;
-use ark_ff::{BigInteger, BigInteger384, BigInteger256, PrimeField};
+use ark_test_curves::bls12_381::{Fr,FrConfig};
+use ark_ff::{BigInteger, BigInteger256, BigInteger384, MontConfig, PrimeField};
 
 // Preliminary work 
-// Heavy computation of constants, once and for all
+// Heavy computation of the constant 2^256, once and for all
 lazy_static::lazy_static! {
-    static ref R_256: Fr = Fr::from_bigint(BigInteger256::new([0, 0, 0, 1])).unwrap(); 
-    static ref R_320: Fr = {
-        let base_256 = Fr::from_bigint(BigInteger256::new([0, 0, 0, 1])).unwrap();
-        let shift_64 = Fr::from(1u64 << 63) * Fr::from(2u64);
-        base_256 * shift_64 
+    static ref R_256: Fr = {
+        let r2_bigint = <FrConfig as MontConfig<4>>::R2;
+        Fr::new_unchecked(r2_bigint)
     };
 }
 
@@ -45,6 +43,8 @@ pub fn small_big_mul_raw(small: u64, big: &Fr) -> BigInteger384 {
     BigInteger384::new(res_limbs)
 }
 
+
+
 /// Quick dot product combining delayed reduction and small-big multiplication
 /// Usage of a montgomery reduction  rather than a Barrett reduction
 pub fn fast_dot_product_strided(small_values: &[u64], coefficients: &[Fr], offset : usize, stride : usize) -> Fr {
@@ -60,8 +60,8 @@ pub fn fast_dot_product_strided(small_values: &[u64], coefficients: &[Fr], offse
     // We go throught the Fr elements (vector coefficients) with the stride given in parameter
     // We also take into account an offset 
     // Useful for the prover in protcol.rs
-    // ex: offset = 0, stride = 2 pour p0 (0, 2, 4, 6...)
-    // ex: offset = 1, stride = 2 pour p1 (1, 3, 5, 7...)
+    // ex: offset = 0, stride = 2 for p0 (0, 2, 4, 6...)
+    // ex: offset = 1, stride = 2 for p1 (1, 3, 5, 7...)
     for (i, coeff) in coefficients.iter().enumerate() {
         let idx = offset + i * stride;
         let small = small_values[idx];
@@ -72,12 +72,17 @@ pub fn fast_dot_product_strided(small_values: &[u64], coefficients: &[Fr], offse
     }
 
     // Optimized delayed reduction
-    let mut final_sum : Fr;
 
-    //1. 4 first limbs -> direct conversion, using arkworks-native Montgomery reduction
+    //1. 4 first limbs -> direct conversion WITHOUT using Montgomery reduction
+
+    // Extraction of the 4 lowest limbs of global_t
+    // global_t : 384 bits - too big for Fr::new()
+    // low_limbs : 256 bits - small enough for Fr::new()
     let mut low_limbs = [0u64; 4];
     low_limbs.copy_from_slice(&global_t.0[0..4]);
-    final_sum = Fr::from_bigint(BigInteger256::new(low_limbs)).unwrap();
+
+    // new_unchecked() : no Montgomery reduction
+    let mut final_sum = Fr::new_unchecked(BigInteger256::new(low_limbs));
 
     // 2. Separated handling of the 5th and 6th limb (global_t[4], global_t[5])
     if global_t.0[4] > 0 || global_t.0[5] > 0 {
@@ -98,4 +103,65 @@ pub fn fast_dot_product_strided(small_values: &[u64], coefficients: &[Fr], offse
         final_sum += overflow_fr * *R_256;
     }
     final_sum
+}
+
+/// Computes a fast dot product between a window of Fr elements (which might contain small integers)
+/// and precomputed Fr coefficients, accumulating the result into `accumulator`.
+/// 
+/// It dynamically optimizes the execution by using `small_big_mul_raw` when the element
+/// is small, and falls back to full field multiplication when it has already been extrapolated.
+pub fn adaptive_dot_product_accumulate(
+    accumulator: &mut Fr,
+    window_evals: &[Fr],
+    coefficients: &[Fr],
+) {
+    assert_eq!(
+        window_evals.len(),
+        coefficients.len(),
+        "Size mismatch between window evaluations and coefficients"
+    );
+
+    // Giant integer accumulator for our optimized fast-path (up to 384 bits)
+    let mut global_t = BigInteger384::from(0u64);
+    // A separate accumulator for the slow-path elements (fully extrapolated Fr)
+    let mut slow_path_sum = Fr::from(0u64);
+
+    for i in 0..coefficients.len() {
+        let bigint = window_evals[i].into_bigint();
+
+        // Check if the Fr element is actually a "small integer"
+        // (i.e., all limbs above the first one are zero)
+        if bigint.0[1] == 0 && bigint.0[2] == 0 && bigint.0[3] == 0 {
+            // FAST-PATH: It's a small integer (like 0, 1, or a small bound)
+            let small = bigint.0[0];
+            if small == 0 { continue; }
+
+            let t_i = small_big_mul_raw(small, &coefficients[i]);
+            global_t.add_with_carry(&t_i);
+        } else {
+            // SLOW-PATH: It's a large, already extrapolated field element
+            // We must perform a standard Montgomery multiplication
+            slow_path_sum += window_evals[i] * coefficients[i];
+        }
+    }
+
+    // --- Finalize the Fast-Path Reduction ---
+    let mut low_limbs = [0u64; 4];
+    low_limbs.copy_from_slice(&global_t.0[0..4]);
+    let mut fast_path_sum = Fr::new(BigInteger256::new(low_limbs));
+
+    // Handle overflow limbs for the fast-path if present
+    if global_t.0[4] > 0 || global_t.0[5] > 0 {
+        let overflow_limbs = BigInteger256::new([
+            global_t.0[4],
+            global_t.0[5],
+            0,
+            0
+        ]);
+        let overflow_fr = Fr::from_bigint(overflow_limbs).unwrap();
+        fast_path_sum += overflow_fr * *R_256;
+    }
+
+    // --- Combine everything into the main accumulator ---
+    *accumulator += fast_path_sum + slow_path_sum;
 }

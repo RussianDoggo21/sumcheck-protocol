@@ -1,5 +1,6 @@
 use ark_ff::Field;
 use ark_test_curves::bls12_381::Fr;
+use ark_poly::{DenseMultilinearExtension, MultilinearExtension};
 
 use crate::improved::arithmetic::adaptive_dot_product_accumulate;
 
@@ -147,4 +148,116 @@ pub fn multivariate_extrapolate(
 
     // After v rounds, current_cube matches U_d^v and has size (d+1)^v
     current_cube
+}
+
+/// Implementation of Procedure 1: MultiProductEval
+/// Recursively computes the evaluations of g(x) = \prod_{i=1}^d p_i(x) over U_d^v
+///
+/// # Arguments
+/// * `polynomials` - A slice of DenseMultilinearExtension representing multilinear polynomials over {0,1}^v
+/// * `d` - The total number of polynomials to multiply
+pub fn multi_product_eval(polynomials: &[DenseMultilinearExtension<Fr>], d: usize) -> Vec<Fr> {
+
+    //println!("\nDebugging of multi_product_eval : beginning");
+
+    assert_eq!(polynomials.len(), d, "The number of polynomials provided must match d");
+    assert!(d > 0, "Cannot compute the product of an empty slice of polynomials");
+
+    // Check that all input polynomials share the same number of variables
+    let v = polynomials[0].num_vars();
+    for i in 1..polynomials.len(){
+        assert_eq!(polynomials[i].num_vars, v, "p_0 and p{} do not have the same number of variables", i+1);
+    }
+
+    //println!("Original d = {d}");
+
+    // 1. Base case: if d = 1, g(x) = p_1(x)
+    // Map the initial Boolean hypercube {0, 1}^v to the U_1^v grid layout [inf, 0]
+    if d == 1 {
+        let v = polynomials[0].num_vars();
+        let mut current_grid = polynomials[0].evaluations.clone();
+
+        // Apply the bijection dimension by dimension, from lowest stride (X0) to highest
+        // To transform an axis from [0, 1] format to the [inf, 0] protocol format:
+        // - Value at 0 (new index 1) = old value at 0
+        // - Value at inf (new index 0) = derivative slope = (old value at 1) - (old value at 0)
+        for var in 0..v {
+            let stride = usize::pow(2, var as u32); // Current variable stride size (2^var)
+            let chunk_size = stride * 2;
+            let mut next_grid = vec![Fr::from(0u64); current_grid.len()];
+
+            for chunk in 0..(current_grid.len() / chunk_size) {
+                let offset = chunk * chunk_size;
+                for i in 0..stride {
+                    let p0 = current_grid[offset + i];          // Evaluation at point 0
+                    let p1 = current_grid[offset + stride + i]; // Evaluation at point 1
+
+                    let p_inf = p1 - p0; // Projective limit at infinity (leading coefficient)
+
+                    // Reorder elements into the target [inf, 0] layout structure
+                    next_grid[offset + i] = p_inf;          // Axis index 0 (inf position)
+                    next_grid[offset + stride + i] = p0;    // Axis index 1 (0 position)
+                }
+            }
+            current_grid = next_grid;
+        }
+        return current_grid;
+    }
+
+    // 2. Divide: split the polynomials into two halves
+    let m = d/2;
+
+    //println!("m = {m}");
+    
+    // Recursive calls for left and right sub-products
+    let q_l = multi_product_eval(&polynomials[0..m], m);
+    let q_r = multi_product_eval(&polynomials[m..d], d - m);
+
+    /* 
+    println!("\nq_l for m = {m}");
+    for elmt in &q_l {
+        println!("{:?}",elmt);
+    }
+
+    println!("\nq_r for m = {m}");
+    for elmt in &q_r {
+        println!("{:?}",elmt);
+    }
+    */
+
+    // 3. Extrapolate both halves to the target domain U_d^v
+    // For q_l: currently on U_m^v, needs to reach U_d^v. 
+    // Number of classical points to add = d - m
+    let num_extrap_l = d - m;
+    let q_l_prime = multivariate_extrapolate(&q_l, m, num_extrap_l, v);
+
+    // For q_r: currently on U_{d-m}^v, needs to reach U_d^v.
+    // Number of classical points to add = m
+    let num_extrap_r = m;
+    let q_r_prime = multivariate_extrapolate(&q_r, d - m, num_extrap_r, v);
+
+    // Sanity check: both extended cubes must have identical sizes
+    assert_eq!(q_l_prime.len(), q_r_prime.len(), "Size mismatch during pointwise multiplication");
+
+    /* 
+    println!("\nq_l_prime for m = {m}");
+    for elmt in &q_l_prime {
+        println!("{:?}",elmt);
+    }
+
+    println!("\nq_r_prime for m = {m}");
+    for elmt in &q_r_prime {
+        println!("{:?}",elmt);
+    }    
+    */
+
+    // 4. Combine: Pointwise product of evaluations (Hadamard product)
+    let mut g = Vec::with_capacity(q_l_prime.len());
+    for i in 0..q_l_prime.len() {
+        g.push(q_l_prime[i] * q_r_prime[i]);
+    }
+
+    //println!("Debugging of multi_product_eval : end");
+
+    g
 }

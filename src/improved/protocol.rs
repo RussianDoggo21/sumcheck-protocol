@@ -1,90 +1,53 @@
-use ark_poly::polynomial::multivariate::{SparsePolynomial, SparseTerm};
+use ark_poly::DenseMultilinearExtension;
 use ark_test_curves::bls12_381::Fr;
-use ark_std::rand::Rng;
-use crate::improved::arithmetic::fast_dot_product_strided;
-use crate::utils::generate_small_evaluations_from_poly;
+use crate::improved::prover::Prover;
+use crate::improved::verifier::Verifier;
 
-use crate::improved::engine;
+pub fn linear_time_sc(
+    list_of_poly: &[DenseMultilinearExtension<Fr>],
+    num_poly: usize,
+    sumcheck_claim: Fr,
+) -> bool {
+    assert!(list_of_poly.len() > 0, "Cannot run sumcheck on an empty list of polynomials");
 
-
-/// Optimized "Small-Value" Sumcheck protocol implementation for a multilinear polynomial
-pub fn sc_protocol_improved<R: Rng>(poly: &SparsePolynomial<Fr, SparseTerm>, rng : &mut R) -> (Fr, Vec<(Fr, Fr)>) {
-
-    // Computes all the evaluation of poly over the hypercube {0,1}^poly.num_vars
-    let small_evals = generate_small_evaluations_from_poly(poly);
-
-    // Initialize the vector that will hold the proof for the Sumcheck protocol
-    let num_vars = poly.num_vars;
-    let mut proofs = Vec::with_capacity(num_vars);
-    
-    // Compute the initial total claimed sum using delayed reduction
-    let mut total_sum_u128: u128 = 0;
-    for &val in &small_evals {
-        total_sum_u128 += val as u128;
-    }
-    let claimed_sum = Fr::from(total_sum_u128);
-
-    // Generation of random challenges for verification simulation
-    let mut challenges = Vec::with_capacity(num_vars);
-    for _ in 0..num_vars {
-        challenges.push(Fr::from(rng.gen_range(0..=100))); // SUPPRIMER LA RANGE PLUS TARD ??
+    let num_vars = list_of_poly[0].num_vars;
+    for p in list_of_poly {
+        assert_eq!(
+            num_vars, p.num_vars,
+            "All polynomials must have the same number of variables"
+        );
     }
 
-    // ================ OK JUSQU'ICI ==========================
+    assert_eq!(
+        list_of_poly.len(),
+        num_poly,
+        "Number of multilinear polynomials must equal {num_poly}"
+    );
 
-    // --- ROUND 0: Pure Small-Value Optimization ---
-    let half = small_evals.len() / 2;
-    let coeffs = vec![Fr::from(1u64); half]; 
+    // Initialisation of both prover and verifier via their respective constructor
+    let mut prover = Prover::new(list_of_poly);
+    let mut verifier = Verifier::new(num_poly);
 
-    // Accès direct par enjambement (stride = 2) : ZERO COPIE !
-    let p0_r0 = fast_dot_product_strided(&small_evals, &coeffs, 0, 2);
-    let p1_r0 = fast_dot_product_strided(&small_evals, &coeffs, 1, 2);
-    proofs.push((p0_r0, p1_r0));
+    // C_0 is our initial sumcheck claim
+    let mut c_i = sumcheck_claim;
 
-    // Combine evaluations using the first challenge to prepare Round 1
-    let r0 = challenges[0];
-    let mut current_fr_evals = Vec::with_capacity(half);
-    
-    for i in 0..half {
-        let p0_fr = Fr::from(small_evals[i * 2]);     // Index pair
-        let p1_fr = Fr::from(small_evals[i * 2 + 1]); // Index impair
-        
-        let next_val = p0_fr + r0 * (p1_fr - p0_fr);
-        current_fr_evals.push(next_val);
+    // Loop through each round i = 0 ... num_vars - 1 (Rounds 1 to l)
+    for i in 0..num_vars {
+        // 1. Prover computes the s_i evaluations and sends them to Verifier
+        let s_i = prover.compute_s_i(num_vars, i);
+        verifier.add_s_i(s_i);
+
+        // 2. Verifier computes s_i(0) and samples a random challenge r_i
+        let s_i_0 = verifier.compute_s_i_0(c_i);
+        let challenge = verifier.send_challenge();
+
+        // 3. Verifier updates their local target claim: C_i = s_i(r_i)
+        c_i = verifier.update_c_i(challenge, s_i_0);
+
+        // 4. Prover folds their internal bookkeeping tables down by half using r_i
+        prover.update_p_arrays(num_vars, i, challenge);
     }
 
-    // --- ROUNDS 1 to num_vars-1: Standard/Hybrid Proving ---
-    let mut current_size = half;
-    
-    for round in 1..num_vars {
-        let next_half = current_size / 2;
-
-        // Élimination des vecteurs p0_fr_vec et p1_fr_vec !
-        // On accumule directement en lisant dans current_fr_evals par enjambement
-        let mut p0 = Fr::from(0u64);
-        let mut p1 = Fr::from(0u64);
-        
-        for i in 0..next_half {
-            p0 += current_fr_evals[i * 2];     // Accumulation directe de l'index pair
-            p1 += current_fr_evals[i * 2 + 1]; // Accumulation directe de l'index impair
-        }
-        proofs.push((p0, p1));
-
-        let r = challenges[round];
-        let mut next_fr_evals = Vec::with_capacity(next_half);
-        
-        // On recalcule le niveau suivant en appliquant l'enjambement en ligne
-        for i in 0..next_half {
-            let p0_val = current_fr_evals[i * 2];
-            let p1_val = current_fr_evals[i * 2 + 1];
-            
-            let next_val = p0_val + r * (p1_val - p0_val);
-            next_fr_evals.push(next_val);
-        }
-
-        current_fr_evals = next_fr_evals;
-        current_size = next_half;
-    }
-
-    (claimed_sum, proofs)
+    // Final oracle evaluation check at the end of the protocol
+    verifier.final_check(list_of_poly, c_i)
 }

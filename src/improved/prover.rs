@@ -1,0 +1,77 @@
+use ark_ff::Field;
+use ark_poly::DenseMultilinearExtension;
+use ark_test_curves::bls12_381::Fr;
+use crate::improved::engine::{EvaluationPoint, get_u_hat_domain}; // Ajuste le chemin selon ton projet
+
+pub struct Prover {
+    pub list_of_arrays: Vec<Vec<Fr>>,
+    pub d: usize,
+}
+
+impl Prover {
+    /// Constructor to initialize the Prover state (Step 0)
+    pub fn new(list_of_poly: &[DenseMultilinearExtension<Fr>]) -> Self {
+        let d = list_of_poly.len();
+        // Extract the underlying flat vectors from the multilinear extensions
+        let list_of_arrays = list_of_poly
+            .iter()
+            .map(|poly| poly.evaluations.clone())
+            .collect();
+
+        Prover { list_of_arrays, d }
+    }
+
+    /// Computes the round polynomial s_i(u) over U_d_hat (Step 1)
+    pub fn compute_s_i(&self, num_vars: usize, round: usize) -> Vec<Fr> {
+        let u_d_hat = get_u_hat_domain(self.d);
+        let current_hypercube_size = 1 << (num_vars - round);
+        let next_hypercube_size = current_hypercube_size / 2;
+
+        let mut s_i_evals = vec![Fr::from(0u64); self.d];
+
+        for (u_idx, &u) in u_d_hat.iter().enumerate() {
+            let mut sum_over_hypercube = Fr::from(0u64);
+
+            for x_prime in 0..next_hypercube_size {
+                let mut product_over_k = Fr::from(1u64);
+                let idx_0 = x_prime << 1;
+                let idx_1 = idx_0 | 1;
+
+                for k in 0..self.d {
+                    let p0 = self.list_of_arrays[k][idx_0];
+                    let p1 = self.list_of_arrays[k][idx_1];
+                    let delta_p = p1 - p0;
+
+                    let term = match u {
+                        EvaluationPoint::Infinity => delta_p,
+                        EvaluationPoint::Value(v) => (delta_p * Fr::from(v)) + p0,
+                    };
+                    product_over_k *= term;
+                }
+                sum_over_hypercube += product_over_k;
+            }
+            s_i_evals[u_idx] = sum_over_hypercube;
+        }
+        s_i_evals
+    }
+
+    /// Updates the bookkeeping arrays using the verifier's challenge r_i (Step 4)
+    pub fn update_p_arrays(&mut self, num_vars: usize, round: usize, challenge: Fr) {
+        let current_hypercube_size = 1 << (num_vars - round);
+        let next_hypercube_size = current_hypercube_size / 2;
+
+        let mut next_tables = vec![vec![Fr::from(0u64); next_hypercube_size]; self.d];
+        for k in 0..self.d {
+            for x_prime in 0..next_hypercube_size {
+                let idx_0 = x_prime << 1;
+                let idx_1 = idx_0 | 1;
+
+                let p0 = self.list_of_arrays[k][idx_0];
+                let p1 = self.list_of_arrays[k][idx_1];
+
+                next_tables[k][x_prime] = ((p1 - p0) * challenge) + p0;
+            }
+        }
+        self.list_of_arrays = next_tables;
+    }
+}

@@ -1,120 +1,124 @@
 // First implementation of sumcheck protocol using arkworks
 
-// Arkworks API for sumcheck
+mod improved;
+mod utils;
+
+use ark_test_curves::bls12_381::Fr;
+use ark_ff::Field;
 use ark_linear_sumcheck::ml_sumcheck::MLSumcheck;
 
-// Timer
-use std::time::{Instant, Duration};
-
-// To write the benchmark
 use std::fs::File;
-use std::io::Write;
+use std::io::{Write, stdout};
+use std::time::{Duration, Instant};
 
-// Modules import
-mod utils;
-mod naive;
-mod improved;
-
-use naive::protocol::sc_protocol as sc_protocol_naive;
-use improved::protocol::sc_protocol_improved;
-use crate::utils::{compute_hypercube_sum, format_multivariate_sparse_poly, generate_poly_test, generate_small_evaluations_from_poly};
+use crate::utils::generate_multivariate_poly_test;
+use crate::improved::protocol::linear_time_sc;
 
 fn main() {
-    //test_range_monomials(200, 10);
-    multilinear_test(200);
+    // Parameters configuration:
+    // - max_vars = 14: Benchmark from 4 up to 14 variables (2^14 = 16,384 points)
+    // - d = 3: A product of 3 multilinear polynomials (g(x) = p1(x) * p2(x) * p3(x))
+    // - num_runs = 5: Number of iterations per variable count to get a stable average
+    let max_vars = 14;
+    let d = 3;
+    let num_runs = 5;
+
+    println!("==================================================");
+    println!("       STARTING SUMCHECK PROTOCOL BENCHMARK        ");
+    println!("==================================================");
+    
+    test_range_variables(max_vars, d, num_runs);
 }
 
-fn test_range_monomials(max_monomials: usize, num_runs : u32) {
+/// Orchestrates the benchmarks over a range of variables and saves the results into a CSV file.
+pub fn test_range_variables(max_vars: usize, d: usize, num_runs: u32) {
     let mut file = File::create("benchmark_results.csv").expect("Unable to create file");
     
-    // CORRECTION : L'en-tête est maintenant entièrement en millisecondes (ms)
-    writeln!(file, "Monomials,Naive_ms,Arkworks_ms,Optimized_ms").unwrap();
+    // Write CSV header
+    writeln!(file, "Variables,Arkworks_ms,LinearTimeSC_ms").unwrap();
     file.flush().unwrap();
     
-    for num_m in (10..=max_monomials).step_by(10) {
+    // Warm up from 4 variables up to max_vars
+    for num_v in 4..=max_vars {
         println!("\n==================================================");
-        println!(" Benchmarking for {} monomials (Average over {} runs)...", num_m, num_runs);
+        println!(" Benchmarking for {} variables (2^{} = {} points, d={})", num_v, num_v, 1 << num_v, d);
+        println!(" Average over {} runs...", num_runs);
         println!("==================================================");
         
-        let mut total_naive = Duration::ZERO;
         let mut total_ark = Duration::ZERO;
         let mut total_opt = Duration::ZERO;
 
-        // Boucle pour effectuer les multiples runs
         for run in 1..=num_runs {
             print!("   Run {}/{}... ", run, num_runs);
-            std::io::stdout().flush().unwrap(); // Force l'affichage immédiat
+            stdout().flush().unwrap();
 
-            let (d_naive, d_ark, d_opt) = multilinear_test(num_m);
+            let (d_ark, d_opt) = multivariate_test(num_v, d);
             
-            total_naive += d_naive;
             total_ark += d_ark;
             total_opt += d_opt;
             
             println!("Done.");
         }
 
-        // Calcul des moyennes
-        let avg_naive = total_naive / num_runs;
+        // Compute averages
         let avg_ark = total_ark / num_runs;
         let avg_opt = total_opt / num_runs;
 
-        // Conversion en millisecondes (f64)
-        let duration_naive_ms = avg_naive.as_secs_f64() * 1000.0;
+        // Convert Durations to milliseconds (f64)
         let duration_ark_ms = avg_ark.as_secs_f64() * 1000.0;
         let duration_opt_ms = avg_opt.as_secs_f64() * 1000.0;
 
-        // Écriture propre dans le CSV
-        writeln!(file, "{},{},{},{}", num_m, duration_naive_ms, duration_ark_ms, duration_opt_ms).unwrap();
+        // Save benchmarks to CSV file
+        writeln!(file, "{},{},{}", num_v, duration_ark_ms, duration_opt_ms).unwrap();
         file.flush().unwrap();
         
-        println!("\n -> Average Naive    : {:.2} ms", duration_naive_ms);
-        println!(" -> Average Arkworks : {:.2} ms", duration_ark_ms);
-        println!(" -> Average Optimized: {:.4} ms", duration_opt_ms);
+        println!("\n -> Average Arkworks    : {:.4} ms", duration_ark_ms);
+        println!(" -> Average LinearTimeSC : {:.4} ms", duration_opt_ms);
     }
-    println!("\n[OK] Fichier CSV généré avec succès sous le nom 'benchmark_results.csv' !");
+    println!("\n[OK] Benchmark complete! Results saved in 'benchmark_results.csv'.");
 }
 
-fn multilinear_test(num_m : usize) -> (Duration, Duration, Duration){
-
+/// Runs a single multivariate test instance comparing Arkworks against our LinearTimeSC.
+fn multivariate_test(num_vars: usize, d: usize) -> (Duration, Duration) {
     let mut rng = rand::thread_rng();
-    let (poly0, list_of_products) = generate_poly_test(&mut rng, num_m); 
-    //println!("{}\n", format_multivariate_sparse_poly(&poly0));
-/* ************************************************************************************************************************************************************** */   
-    
-    println!("\nStarting naive protocol");
-    let gamma = compute_hypercube_sum(&poly0);
-    let start_naive = Instant::now();
-    sc_protocol_naive(&poly0, gamma, &mut rng);
-    let duration_naive = start_naive.elapsed();
-    println!("\nNaive protocol OK \nTime = {:?} ", duration_naive);
 
-/*************************************************************************************************************************************************************** */
+    // 1. Generate the random multilinear extensions and the official Arkworks data structure
+    let (list_of_poly, list_of_products) = generate_multivariate_poly_test(&mut rng, num_vars, d);
 
-    println!("\nStarting arkworks protocol");
+    // 2. Local exact sum calculation over the hypercube to provide the correct 'expected_sum' claim
+    let hypercube_size = 1 << num_vars;
+    let mut expected_sum = Fr::from(0u64);
+    for x in 0..hypercube_size {
+        let mut product_at_x = Fr::from(1u64);
+        for k in 0..d {
+            product_at_x *= list_of_poly[k].evaluations[x];
+        }
+        expected_sum += product_at_x;
+    }
+
+    // 3. Benchmark Arkworks native multi-factor MLSumcheck implementation
     let start_arkworks = Instant::now();
     let proof = MLSumcheck::prove(&list_of_products)
-        .expect("The arkworks prover failed");
+        .expect("The Arkworks prover failed");
     let duration_arkworks = start_arkworks.elapsed();
-    let claimed_sum = MLSumcheck::extract_sum(&proof);
-    println!("Arkworks protocol OK \nTime = {:?}", duration_arkworks);
 
-/* ************************************************************************************************************************************************************** */
+    // Verify Arkworks sum matches our calculated one (sanity check)
+    let ark_sum = MLSumcheck::extract_sum(&proof);
+    assert_eq!(expected_sum, ark_sum, "Local hypercube sum mismatch with Arkworks sum extraction!");
 
-    println!("\nStarting optimized (Small-Value) protocol");
+    // 4. Benchmark our custom interactive LinearTime_SC protocol
     let start_improved = Instant::now();
-    let (sum_improved, _proofs) = sc_protocol_improved(&poly0, &mut rng);
+    let verifier_accepted = linear_time_sc(&list_of_poly, d, expected_sum);
     let duration_improved = start_improved.elapsed(); 
-    println!("Optimized protocol OK \nTime = {:?}", duration_improved);
-
-/* ************************************************************************************************************************************************************** */
+    
+    // Ensure that our custom Verifier successfully verified the proof
     assert!(
-        gamma == claimed_sum && claimed_sum == sum_improved,
-        "Error : Computed sums not equal... Naive: {}, Arkworks: {}, Improved: {}",
-        gamma, claimed_sum, sum_improved
+        verifier_accepted,
+        "Security Error: The optimized Verifier REJECTED the proof for {} variables!", 
+        num_vars
     );
 
-    (duration_naive, duration_arkworks, duration_improved)
+    (duration_arkworks, duration_improved)
 }
 
 /*
@@ -274,7 +278,7 @@ fn test_multivariate_exhaustive_sandbox() {
 }
 */
 
- 
+
 #[test]
 fn test_multi_product_eval_sandbox() {
     use ark_test_curves::bls12_381::Fr;

@@ -4,6 +4,34 @@ use ark_poly::{DenseMultilinearExtension, MultilinearExtension};
 
 use crate::improved::arithmetic::adaptive_dot_product_accumulate;
 
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum EvaluationPoint {
+    Infinity,
+    Value(u64),
+}
+
+/// Generates the full extended grid domain U_d = { inf, 0, 1, ..., d-1 }
+/// Used for indexing multi_product_eval as well as univariate_extrapolation and multivariate extrapolation.
+pub fn get_u_domain(d: usize) -> Vec<EvaluationPoint> {
+    let mut domain = Vec::with_capacity(d + 1);
+    domain.push(EvaluationPoint::Infinity);
+    for val in 0..d {
+        domain.push(EvaluationPoint::Value(val as u64));
+    }
+    domain
+}
+
+/// Generates the restricted domain U_d_hat = { inf, 1, ..., d-1 }
+/// Used specifically for the round polynomials s_i(u) in LinearTime_SC.
+pub fn get_u_hat_domain(d: usize) -> Vec<EvaluationPoint> {
+    let mut domain = Vec::with_capacity(d);
+    domain.push(EvaluationPoint::Infinity);
+    for val in 1..d {
+        domain.push(EvaluationPoint::Value(val as u64));
+    }
+    domain
+}
+
 pub fn compute_kernel(k: usize) -> Vec<Fr> {
     let mut kernel = Vec::with_capacity(k + 1);
     let target_x = Fr::from(k as u64);

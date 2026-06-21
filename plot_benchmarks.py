@@ -2,79 +2,69 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import numpy as np
 
-# 1. Chargement des données CSV
+# 1. Loading the CSV data
 try:
     df = pd.read_csv("benchmark_results.csv")
 except FileNotFoundError:
-    print("Error : FIle 'benchmark_results.csv' not foundd.")
+    print("Error : File 'benchmark_results.csv' not found.")
     exit()
 
-# 2. Conversion de l'unité de l'optimisé (ns -> ms) pour avoir la même échelle partout
-# df['Optimized_ms'] = df['Optimized_ns'] / 1_000_000.0
-
-# 3. Création du graphique
+# ==============================================================================
+# GRAPH 1 : PERFORMANCE CURVES
+# ==============================================================================
 plt.figure(figsize=(10, 6))
 
-# Tracé des courbes
-plt.plot(df['Monomials'], df['Naive_ms'], 'o-', color='crimson', label='Naive protocol (ms)', linewidth=2)
-plt.plot(df['Monomials'], df['Arkworks_ms'], 's-', color='orange', label='Arkworks protocol (ms)', linewidth=2)
-plt.plot(df['Monomials'], df['Optimized_ms'], '^-', color='teal', label='Optimized / Small-Value (ms)', linewidth=2)
+# Plotting the lines using the new column names
+plt.plot(df['Variables'], df['Arkworks_ms'], 's-', color='orange', label='Arkworks framework (ms)', linewidth=2)
+plt.plot(df['Variables'], df['LinearTimeSC_ms'], '^-', color='teal', label='LinearTime_SC (ms)', linewidth=2)
 
-# Configuration de l'échelle logarithmique pour l'axe Y
+# Logarithmic scale for the Y axis because of the exponential nature of 2^ell
 plt.yscale('log')
 
-# Personnalisation des axes et titres
-plt.xlabel('Number of monomials', fontsize=12, fontweight='bold', labelpad=10)
+# Customizing axes and titles
+plt.xlabel('Number of variables ($\ell$)', fontsize=12, fontweight='bold', labelpad=10)
 plt.ylabel('Execution time (ms) - Log scale', fontsize=12, fontweight='bold', labelpad=10)
-plt.title('Comparative benchmark of the Sumcheck Protocol', fontsize=14, fontweight='bold', pad=15)
+plt.title('Comparative Benchmark: Multivariate Sumcheck Protocol', fontsize=14, fontweight='bold', pad=15)
 
-# Ajout d'une grille propre pour la lecture
+# Adding a clean grid
 plt.grid(True, which="both", ls="--", alpha=0.5)
 
-# Légende
+# Legend
 plt.legend(fontsize=11, loc='upper left')
-
-# Ajustement des marges pour que ce soit parfait
 plt.tight_layout()
 
-# 4. Sauvegarde de l'image pour ton rapport
+# Save the curve plot
 plt.savefig('sumcheck_benchmark_curve.png', dpi=300)
-print("Graphic successufly generated under the name 'sumcheck_benchmark_curve.png' !")
+print("Graphic successfully generated under the name 'sumcheck_benchmark_curve.png' !")
 
 # ==============================================================================
-# GRAPHIC 2 : THE BARS (Focus on 200 monomials)
+# GRAPH 2 : THE BARS (Focus on max variables analyzed, e.g., 14)
 # ==============================================================================
-# Extract the row where Monomials == 200
-data_200 = df[df['Monomials'] == 200]
+max_vars = df['Variables'].max()
+data_max = df[df['Variables'] == max_vars]
 
-if data_200.empty:
-    print("Warning: No data found for 200 monomials. Bar chart skipped.")
+if data_max.empty:
+    print("Warning: No data found for bar chart plotting. Skipped.")
 else:
     plt.figure(figsize=(8, 6))
     
-    protocols = ['Naive', 'Arkworks', 'Optimized\n(Small-Value)']
-    # Values in ms for the correct scale on the log plot
+    protocols = ['Arkworks', 'LinearTime_SC']
     times_ms = [
-        data_200['Naive_ms'].values[0], 
-        data_200['Arkworks_ms'].values[0], 
-        data_200['Optimized_ms'].values[0]
+        data_max['Arkworks_ms'].values[0], 
+        data_max['LinearTimeSC_ms'].values[0]
     ]
     
-    # Raw values with their original units for the labels
     raw_labels = [
-        f"{data_200['Naive_ms'].values[0]:.2f} ms",
-        f"{data_200['Arkworks_ms'].values[0]:.2f} ms",
-        f"{data_200['Optimized_ms'].values[0] :.4f} ms"
+        f"{times_ms[0]:.2f} ms",
+        f"{times_ms[1]:.4f} ms"
     ]
     
-    colors = ['crimson', 'orange', 'teal']
-    bars = plt.bar(protocols, times_ms, color=colors, width=0.5, edgecolor='black', alpha=0.9)
+    colors = ['orange', 'teal']
+    bars = plt.bar(protocols, times_ms, color=colors, width=0.4, edgecolor='black', alpha=0.9)
     
-    # Log scale is mandatory here too because of the huge performance gap
     plt.yscale('log')
-    
     plt.ylabel('Execution time (ms) - Log scale', fontsize=12, fontweight='bold', labelpad=10)
-    plt.title('Execution Time Comparison for 200 Monomials', fontsize=14, fontweight='bold', pad=20)
+    plt.title(f'Execution Time Comparison for {max_vars} Variables ($2^{{{max_vars}}}$ points)', fontsize=14, fontweight='bold', pad=20)
     plt.grid(True, axis='y', which="both", ls="--", alpha=0.3)
     
     # Add text labels on top of the bars
@@ -91,8 +81,9 @@ else:
         )
         
     # Extra padding on top to prevent text clipping
-    plt.ylim(top=plt.ylim()[1] * 3)
+    plt.ylim(top=plt.ylim()[1] * 4)
     plt.tight_layout()
     
-    plt.savefig('sumcheck_bar_chart_200.png', dpi=300)
-    print("Bar chart successfully generated under the name 'sumcheck_bar_chart_200.png' !")
+    # Saving using a clear updated filename
+    plt.savefig('sumcheck_bar_chart_max_vars.png', dpi=300)
+    print(f"Bar chart successfully generated under the name 'sumcheck_bar_chart_max_vars.png' for {max_vars} variables!")

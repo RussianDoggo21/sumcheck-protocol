@@ -36,22 +36,26 @@ pub fn compute_kernel(k: usize) -> Vec<Fr> {
     let mut kernel = Vec::with_capacity(k + 1);
     let target_x = Fr::from(k as u64);
 
+    // Used later in the for loops
+    // Allows to reduce the number of conversion from u64 to Fr
+    let x_points: Vec<Fr> = (0..k).map(|i| Fr::from(i as u64)).collect();
+
     // 1. Point at infinity: C_inf = k!
-    let mut c_inf = Fr::from(1u64);
+    let mut c_inf = Fr::ONE;
     for i in 0..k {
-        c_inf *= target_x - Fr::from(i as u64);
+        c_inf *= target_x - x_points[i];
     }
     kernel.push(c_inf);
 
     // 2. Classical Lagrange coefficients
     for i in 0..k {
-        let mut numerator_prod = Fr::from(1u64);
-        let mut denominator_prod = Fr::from(1u64);
-        let x_i = Fr::from(i as u64);
+        let mut numerator_prod = Fr::ONE;
+        let mut denominator_prod = Fr::ONE;
+        let x_i = x_points[i];
 
         for j in 0..k {
             if j == i { continue; }
-            let x_j = Fr::from(j as u64);
+            let x_j = x_points[j];
 
             // Computation of the numerator and the denominator factor by factor
             numerator_prod *= target_x - x_j; // k-j
@@ -92,10 +96,11 @@ pub fn univariate_extrapolate(
         let mut next_val = inf_term;
         
         // Extract the sub-slice of Fr elements currently inside our shifting window
+        // &evals[start_idx..end_idx] := p(c), ..., p(c+k-1)
         let start_idx = 1 + c;
         let end_idx = start_idx + k;
 
-        // Let the adaptive dot product handle the optimization dynamically!
+        // next_val += dot_product(evals[strat_idx..end_idx], kernel_classical)
         adaptive_dot_product_accumulate(&mut next_val, &evals[start_idx..end_idx], kernel_classical);
         
         evals.push(next_val);
@@ -132,15 +137,19 @@ pub fn multivariate_extrapolate(
 
     // 2. Main Loop: Loop over each dimension j from 1 to v
     for j in 1..=num_vars {
-        // Dynamic size of coordinates to the +(already size d) and to the right (still size k)
+        // Dynamic size of coordinates to the left(already size d) and to the right (still size k)
+        // left_variants := #U_d^(j-1) = (d+1)^(j-1)
+        // right_variants := #U_k^(v-j) = (k+1)^(v-j)
         let left_variants = size_d.pow((j - 1) as u32);
         let right_variants = size_k.pow((num_vars - j) as u32);
 
         // Allocate the exact size needed for the temporary buffer at step j
-        let next_cube_size = left_variants * size_d * right_variants;
-        let mut next_cube = vec![Fr::from(0u64); next_cube_size];
+        // The j-th dimension grows from (k+1) elements (U_k) to (d+1) elements (U_d)
+        let next_cube_size = left_variants * size_d * right_variants; // #U_d^(j-1) * (d+1) * #U_k^(v-j)
+        let mut next_cube = vec![Fr::ZERO; next_cube_size];
 
         // The stride is the memory distance between two elements along the j-th axis
+        // BLACK-BOXED
         let current_axis_stride = right_variants;
         let next_axis_stride = right_variants;
 
@@ -149,6 +158,7 @@ pub fn multivariate_extrapolate(
             for xr in 0..right_variants {
                 
                 // Calculate 1D flattened memory offsets
+                // BLACK-BOXED
                 let current_line_offset = xl * size_k * right_variants + xr;
                 let next_line_offset = xl * size_d * right_variants + xr;
 
@@ -182,49 +192,56 @@ pub fn multivariate_extrapolate(
 /// Recursively computes the evaluations of g(x) = \prod_{i=1}^d p_i(x) over U_d^v
 ///
 /// # Arguments
-/// * `polynomials` - A slice of DenseMultilinearExtension representing multilinear polynomials over {0,1}^v
+/// * `polynomials` - A slice of vectors where each Vec<Fr> contains the evaluations of a polynomial over {0,1}^v
 /// * `d` - The total number of polynomials to multiply
-pub fn multi_product_eval(polynomials: &[DenseMultilinearExtension<Fr>], d: usize) -> Vec<Fr> {
-
-    //println!("\nDebugging of multi_product_eval : beginning");
+/// * `v` - The number of variables for the polynomials in this current sub-cube
+pub fn multi_product_eval(polynomials: &[Vec<Fr>], d: usize, v: usize) -> Vec<Fr> {
 
     assert_eq!(polynomials.len(), d, "The number of polynomials provided must match d");
     assert!(d > 0, "Cannot compute the product of an empty slice of polynomials");
 
-    // Check that all input polynomials share the same number of variables
-    let v = polynomials[0].num_vars();
-    for i in 1..polynomials.len(){
-        assert_eq!(polynomials[i].num_vars, v, "p_0 and p{} do not have the same number of variables", i+1);
+    let expected_len = 1 << v; //#({0,1}^v) = 2^v
+    for (i, poly) in polynomials.iter().enumerate() {
+        assert_eq!(
+            poly.len(), 
+            expected_len, 
+            "Polynomial at index {} does not have the expected size 2^{} = {}", 
+            i, v, expected_len
+        );
     }
-
-    //println!("Original d = {d}");
 
     // 1. Base case: if d = 1, g(x) = p_1(x)
     // Map the initial Boolean hypercube {0, 1}^v to the U_1^v grid layout [inf, 0]
     if d == 1 {
-        let v = polynomials[0].num_vars();
-        let mut current_grid = polynomials[0].evaluations.clone();
+        let mut current_grid = polynomials[0].clone();
+        let u_1_domain = get_u_domain(1); // Contains [Infinity, Value(0)]
 
-        // Apply the bijection dimension by dimension, from lowest stride (X0) to highest
-        // To transform an axis from [0, 1] format to the [inf, 0] protocol format:
-        // - Value at 0 (new index 1) = old value at 0
-        // - Value at inf (new index 0) = derivative slope = (old value at 1) - (old value at 0)
         for var in 0..v {
-            let stride = usize::pow(2, var as u32); // Current variable stride size (2^var)
+            // BLACK-BOXED
+            let stride = usize::pow(2, var as u32);
             let chunk_size = stride * 2;
-            let mut next_grid = vec![Fr::from(0u64); current_grid.len()];
+
+            let mut next_grid = vec![Fr::ZERO; current_grid.len()];
 
             for chunk in 0..(current_grid.len() / chunk_size) {
-                let offset = chunk * chunk_size;
+                let offset = chunk * chunk_size; // BLACK-BOXED
                 for i in 0..stride {
                     let p0 = current_grid[offset + i];          // Evaluation at point 0
                     let p1 = current_grid[offset + stride + i]; // Evaluation at point 1
+                    let p_inf = p1 - p0;                        // Projective limit at infinity
 
-                    let p_inf = p1 - p0; // Projective limit at infinity (leading coefficient)
-
-                    // Reorder elements into the target [inf, 0] layout structure
-                    next_grid[offset + i] = p_inf;          // Axis index 0 (inf position)
-                    next_grid[offset + stride + i] = p0;    // Axis index 1 (0 position)
+                    // Reorder elements into the target layout based explicitly on U_1 domain
+                    for (u_idx, u_point) in u_1_domain.iter().enumerate() {
+                        match u_point {
+                            EvaluationPoint::Infinity => {
+                                next_grid[offset + u_idx * stride + i] = p_inf;
+                            },
+                            EvaluationPoint::Value(0) => {
+                                next_grid[offset + u_idx * stride + i] = p0;
+                            },
+                            _ => unreachable!("U_1 domain should only contain Inf and 0"),
+                        }
+                    }
                 }
             }
             current_grid = next_grid;
@@ -234,24 +251,10 @@ pub fn multi_product_eval(polynomials: &[DenseMultilinearExtension<Fr>], d: usiz
 
     // 2. Divide: split the polynomials into two halves
     let m = d/2;
-
-    //println!("m = {m}");
     
     // Recursive calls for left and right sub-products
-    let q_l = multi_product_eval(&polynomials[0..m], m);
-    let q_r = multi_product_eval(&polynomials[m..d], d - m);
-
-    /* 
-    println!("\nq_l for m = {m}");
-    for elmt in &q_l {
-        println!("{:?}",elmt);
-    }
-
-    println!("\nq_r for m = {m}");
-    for elmt in &q_r {
-        println!("{:?}",elmt);
-    }
-    */
+    let q_l = multi_product_eval(&polynomials[0..m], m, v);
+    let q_r = multi_product_eval(&polynomials[m..d], d - m, v);
 
     // 3. Extrapolate both halves to the target domain U_d^v
     // For q_l: currently on U_m^v, needs to reach U_d^v. 
@@ -266,18 +269,6 @@ pub fn multi_product_eval(polynomials: &[DenseMultilinearExtension<Fr>], d: usiz
 
     // Sanity check: both extended cubes must have identical sizes
     assert_eq!(q_l_prime.len(), q_r_prime.len(), "Size mismatch during pointwise multiplication");
-
-    /* 
-    println!("\nq_l_prime for m = {m}");
-    for elmt in &q_l_prime {
-        println!("{:?}",elmt);
-    }
-
-    println!("\nq_r_prime for m = {m}");
-    for elmt in &q_r_prime {
-        println!("{:?}",elmt);
-    }    
-    */
 
     // 4. Combine: Pointwise product of evaluations (Hadamard product)
     let mut g = Vec::with_capacity(q_l_prime.len());

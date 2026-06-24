@@ -2,6 +2,7 @@ use ark_ff::Field;
 use ark_poly::{DenseMultilinearExtension, MultilinearExtension};
 use ark_test_curves::bls12_381::Fr;
 use ark_ff::UniformRand;
+use ark_std::rand::Rng;
 
 pub struct Verifier {
     pub challenges: Vec<Fr>,
@@ -25,9 +26,8 @@ impl Verifier {
     }
 
     /// Generates a random challenge r_i 
-    pub fn send_challenge(&mut self) -> Fr {
-        let mut rng = rand::thread_rng();
-        let r_i = Fr::rand(&mut rng);
+    pub fn send_challenge<R: Rng>(&mut self, rng: &mut R) -> Fr {
+        let r_i = Fr::rand(rng);
         self.challenges.push(r_i);
         r_i
     }
@@ -74,7 +74,7 @@ impl Verifier {
         }
 
         // 2. Compute the vanishing polynomial product: \prod_{k=1}^d (r_i - x_k) (Left term of Eq 6)
-        let mut vanishing_prod = Fr::from(1u64);
+        let mut vanishing_prod = Fr::ONE;
         for i in 0..finite_points.len() {
             vanishing_prod *= r_i - finite_points[i].0;
         }
@@ -93,7 +93,7 @@ impl Verifier {
         assert_eq!(list_of_poly.len(), self.d);
         
         // Evaluate every single p_k at the collected challenge point (r_1, ..., r_ell)
-        let mut g_eval = Fr::from(1u64);
+        let mut g_eval = Fr::ONE;
         for poly in list_of_poly {
             let p_k_eval = poly.evaluate(&self.challenges).unwrap();
             g_eval *= p_k_eval;

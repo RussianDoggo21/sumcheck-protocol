@@ -27,13 +27,13 @@ impl Prover {
         let current_hypercube_size = 1 << (num_vars - round);
         let next_hypercube_size = current_hypercube_size / 2;
 
-        let mut s_i_evals = vec![Fr::from(0u64); self.d];
+        let mut s_i_evals = vec![Fr::ZERO; self.d];
 
         for (u_idx, &u) in u_d_hat.iter().enumerate() {
-            let mut sum_over_hypercube = Fr::from(0u64);
+            let mut sum_over_hypercube = Fr::ZERO;
 
             for x_prime in 0..next_hypercube_size {
-                let mut product_over_k = Fr::from(1u64);
+                let mut product_over_k = Fr::ONE;
                 let idx_0 = x_prime << 1;
                 let idx_1 = idx_0 | 1;
 
@@ -60,7 +60,7 @@ impl Prover {
         let current_hypercube_size = 1 << (num_vars - round);
         let next_hypercube_size = current_hypercube_size / 2;
 
-        let mut next_tables = vec![vec![Fr::from(0u64); next_hypercube_size]; self.d];
+        let mut next_tables = vec![vec![Fr::ZERO; next_hypercube_size]; self.d];
         for k in 0..self.d {
             for x_prime in 0..next_hypercube_size {
                 let idx_0 = x_prime << 1;

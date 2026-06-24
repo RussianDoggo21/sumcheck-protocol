@@ -79,6 +79,8 @@ pub fn test_range_variables(max_vars: usize, d: usize, num_runs: u32) {
 }
 
 /// Runs a single multivariate test instance comparing Arkworks against our LinearTimeSC.
+/// num_vars : number of variables (X0, ..., X_num_vars-1)
+/// d : number of multilinear polynomials (p1, ..., pd)
 fn multivariate_test(num_vars: usize, d: usize) -> (Duration, Duration) {
     let mut rng = rand::thread_rng();
 
@@ -87,9 +89,9 @@ fn multivariate_test(num_vars: usize, d: usize) -> (Duration, Duration) {
 
     // 2. Local exact sum calculation over the hypercube to provide the correct 'expected_sum' claim
     let hypercube_size = 1 << num_vars;
-    let mut expected_sum = Fr::from(0u64);
+    let mut expected_sum = Fr::ZERO;
     for x in 0..hypercube_size {
-        let mut product_at_x = Fr::from(1u64);
+        let mut product_at_x = Fr::ONE;
         for k in 0..d {
             product_at_x *= list_of_poly[k].evaluations[x];
         }

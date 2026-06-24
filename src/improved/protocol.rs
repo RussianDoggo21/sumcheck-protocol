@@ -31,6 +31,9 @@ pub fn linear_time_sc(
     // C_0 is our initial sumcheck claim
     let mut c_i = sumcheck_claim;
 
+    // Unique initialization of the rng to generate random challenges
+    let mut rng = rand::thread_rng();
+
     // Loop through each round i = 0 ... num_vars - 1 (Rounds 1 to l)
     for i in 0..num_vars {
         // 1. Prover computes the s_i evaluations and sends them to Verifier
@@ -39,7 +42,7 @@ pub fn linear_time_sc(
 
         // 2. Verifier computes s_i(0) and samples a random challenge r_i
         let s_i_0 = verifier.compute_s_i_0(c_i);
-        let challenge = verifier.send_challenge();
+        let challenge = verifier.send_challenge(&mut rng);
 
         // 3. Verifier updates their local target claim: C_i = s_i(r_i)
         c_i = verifier.update_c_i(challenge, s_i_0);

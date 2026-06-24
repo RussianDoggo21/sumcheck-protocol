@@ -6,13 +6,16 @@ mod utils;
 use ark_test_curves::bls12_381::Fr;
 use ark_ff::Field;
 use ark_linear_sumcheck::ml_sumcheck::MLSumcheck;
+use ark_poly::MultilinearExtension;
 
 use std::fs::File;
 use std::io::{Write, stdout};
 use std::time::{Duration, Instant};
 
 use crate::utils::generate_multivariate_poly_test;
-use crate::improved::protocol::linear_time_sc;
+use crate::improved::protocol::LinearTimeSC;
+use crate::improved::streaming::MockStream;
+use crate::improved::protocol::SumcheckProtocol;
 
 fn main() {
     // Parameters configuration:
@@ -109,8 +112,13 @@ fn multivariate_test(num_vars: usize, d: usize) -> (Duration, Duration) {
     assert_eq!(expected_sum, ark_sum, "Local hypercube sum mismatch with Arkworks sum extraction!");
 
     // 4. Benchmark our custom interactive LinearTime_SC protocol
+    let linear_time_protocol = LinearTimeSC;
+    let l = list_of_poly[0].num_vars();
+    let d =  list_of_poly.len();
+    let mut stream = MockStream::new(l, d, &list_of_poly);
+
     let start_improved = Instant::now();
-    let verifier_accepted = linear_time_sc(&list_of_poly, d, expected_sum);
+    let verifier_accepted = linear_time_protocol.run(&mut stream, expected_sum);
     let duration_improved = start_improved.elapsed(); 
     
     // Ensure that our custom Verifier successfully verified the proof

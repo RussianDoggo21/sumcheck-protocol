@@ -13,9 +13,8 @@ use std::io::{Write, stdout};
 use std::time::{Duration, Instant};
 
 use crate::utils::generate_multivariate_poly_test;
-use crate::improved::protocol::LinearTimeSC;
+use crate::improved::protocol::{LinearTimeSC, SumcheckProtocol};
 use crate::improved::streaming::MockStream;
-use crate::improved::protocol::SumcheckProtocol;
 
 fn main() {
     // Parameters configuration:
@@ -286,8 +285,6 @@ fn test_multivariate_exhaustive_sandbox() {
 
     println!("✅ The entire extended hypercube perfectly matches the Arkworks reference polynomial!");
 }
-*/
-
 
 #[test]
 fn test_multi_product_eval_sandbox() {
@@ -384,6 +381,6 @@ fn test_multi_product_eval_sandbox() {
     println!("✅ Procedure 1 (MultiProductEval) successfully verified against reference polynomial multiplication!");
    
 }
-
+*/
 
 // To run more tests on the naive protocol : cargo test -- --nocapture --test-threads=1

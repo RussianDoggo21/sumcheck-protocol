@@ -20,6 +20,10 @@ pub trait PolynomialStream<F: PrimeField> {
     /// This is crucial because the algorithm rewinds and re-reads the full stream 
     /// at each new window step 't'.
     fn rewind(&mut self);
+
+    /// Evaluates all underlying polynomials at a complete multi-variate point (r_1, ..., r_l)
+    /// without keeping the full hypercube in memory. Required for the final oracle step.
+    fn evaluate_at_point(&self, point: &[F]) -> Vec<F>;
 }
 
 /// A mock implementation of `PolynomialStream` backed by Arkworks MLEs for unit testing.
@@ -74,5 +78,10 @@ impl<'a, F: PrimeField> PolynomialStream<F> for MockStream<'a, F> {
 
     fn rewind(&mut self) {
         self.cursor = 0;
+    }
+
+    fn evaluate_at_point(&self, point: &[F]) -> Vec<F> {
+        // Leverages Arkworks internal MLE evaluation for mock testing
+        self.data.iter().map(|poly| poly.evaluate(point).unwrap()).collect()
     }
 }

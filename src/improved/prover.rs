@@ -21,6 +21,13 @@ impl Prover {
         Prover { list_of_arrays, d }
     }
 
+    /// Flexible constructor allowing initialization from pre-folded sub-hypercube arrays.
+    /// Essential for transitioning seamlessly into Phase 2 without re-allocating full polynomials.
+    pub fn with_arrays(list_of_arrays: Vec<Vec<Fr>>) -> Self {
+        let d = list_of_arrays.len();
+        Prover { list_of_arrays, d }
+    }
+    
     /// Computes the round polynomial s_i(u) over U_d_hat (Step 1)
     pub fn compute_s_i(&self, num_vars: usize, round: usize) -> Vec<Fr> {
         let u_d_hat = get_u_hat_domain(self.d);

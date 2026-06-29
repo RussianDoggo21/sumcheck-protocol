@@ -5,6 +5,9 @@ use crate::improved::prover::Prover;
 use crate::improved::verifier::Verifier;
 use crate::improved::streaming::PolynomialStream;
 use crate::improved::engine::multi_product_eval;
+use crate::improved::engine::interpolate_at_point;
+use crate::improved::engine::get_u_hat_domain;
+use crate::improved::engine::fold_hypercube_chunk;
 
 pub trait SumcheckProtocol<F: PrimeField> {
     /// Runs the complete Sumcheck protocol (Prover + Verifier interaction).
@@ -155,6 +158,11 @@ impl SumcheckProtocol<Fr> for EvalProductSV {
         let num_vars = stream.num_vars();
         let d = stream.degree();
         let early_window_size = self.early_window_size; // Denoted omega_1 in the comments
+
+        // Persistent unique Verifier instance throughout all protocol phases
+        let mut verifier = Verifier::new(d);
+        let mut c_i = sumcheck_claim;
+        let mut rng = rand::thread_rng();
         
         // -------------------------------------------------------------------------
         // STEP 1.(a) : Compute the intermediate grid polynomial q
@@ -189,19 +197,106 @@ impl SumcheckProtocol<Fr> for EvalProductSV {
         // -------------------------------------------------------------------------
         // STEP 1.(b) : Emulate rounds 1 to omega_1 on the grid q
         // -------------------------------------------------------------------------
-        // Here, we need to run a "grid-based linear-time emulation" (Appendix C)
-        // to consume the first \omega_1 rounds and collect the first challenges r_1, ..., r_{\omega_1}.
-        
-        // TODO: Implémenter l'émulation sur grille
+
+        //NEW !! To understand
+
+        let mut current_grid = q;
+        let u_d_hat = get_u_hat_domain(d);
+
+        // "Emulate rounds [S_t + 1; S_t + w_t]"
+        // Here, S_t = 0 and w_t = early_window_size (t=1)
+        for round in 0..early_window_size {
+            let vars_remaining = early_window_size - round;
+            let stride = usize::pow(d + 1, (vars_remaining - 1) as u32);
+            let mut s_i_evals = vec![Fr::ZERO; d + 1];
+
+            // Evaluate the active variable within the grid over U_d_hat
+            for (u_idx, _) in u_d_hat.iter().enumerate() {
+                let mut sum_over_boolean_subcube = Fr::ZERO;
+                let subcube_size = 1 << (vars_remaining - 1);
+
+                for bits in 0..subcube_size {
+                    let mut grid_index = u_idx * stride;
+                    for var_offset in 0..(vars_remaining - 1) {
+                        let bit = (bits >> var_offset) & 1;
+                        grid_index += bit * usize::pow(d + 1, var_offset as u32);
+                    }
+                    sum_over_boolean_subcube += current_grid[grid_index];
+                }
+                s_i_evals[u_idx] = sum_over_boolean_subcube;
+            }
+
+            // Interact with the global verifier
+            verifier.add_s_i(s_i_evals[u_idx]); // A MODIFIER 
+            let s_i_0 = verifier.compute_s_i_0(c_i);
+            let challenge = verifier.send_challenge(&mut rng);
+            c_i = verifier.update_c_i(challenge, s_i_0);
+
+            // Dynamically collapse the evaluation grid using our new helper function
+            if round < early_window_size - 1 {
+                let mut next_grid = vec![Fr::ZERO; stride];
+                for i in 0..stride {
+                    let mut evals_to_interpolate = vec![Fr::ZERO; d + 1];
+                    for u_idx in 0..=d {
+                        evals_to_interpolate[u_idx] = current_grid[u_idx * stride + i];
+                    }
+                    next_grid[i] = interpolate_at_point(&evals_to_interpolate, challenge);
+                }
+                current_grid = next_grid;
+            }
+        }
         
         // -------------------------------------------------------------------------
         // STEP 2 : Final phase for remaining rounds
         // -------------------------------------------------------------------------
-        // For the remaining rounds (from omega_1 + 1 to l), the paper states we can
-        // stream and store the folded polynomials, then run standard LinearTime_SC.
-        
-        // TODO: Gérer la phase finale linéaire
-        
-        true
+
+        //NEW !! To understand
+
+        let remaining_rounds = num_vars - early_window_size;
+        if remaining_rounds == 0 {
+            // Edge-case: window covered everything. Perform immediate oracle check.
+            let final_evals = stream.evaluate_at_point(&verifier.challenges);
+            let mut g_eval = Fr::ONE;
+            for val in final_evals { g_eval *= val; }
+            return g_eval == c_i;
+        }
+
+        // Memory-efficient step: Stream & fold chunks down using collected window challenges
+        let final_hypercube_size = 1 << remaining_rounds;
+        let mut final_prover_arrays = vec![vec![Fr::ZERO; final_hypercube_size]; d];
+
+        stream.rewind();
+        let mut element_idx = 0;
+        while let Some(chunk) = stream.next_chunk(chunk_size) {
+            for k in 0..d {
+                let folded_scalar = fold_hypercube_chunk(&chunk[k], &verifier.challenges[0..early_window_size]);
+                final_prover_arrays[k][element_idx] = folded_scalar;
+            }
+            element_idx += 1;
+        }
+
+        // Bootstrapping our linear prover with the compressed tables
+        let mut prover = Prover::with_arrays(final_prover_arrays);
+
+        // Standard Sumcheck execution for remaining rounds
+        for i in early_window_size..num_vars {
+            let s_i = prover.compute_s_i(num_vars, i);
+            verifier.add_s_i(s_i);
+
+            let s_i_0 = verifier.compute_s_i_0(c_i);
+            let challenge = verifier.send_challenge(&mut rng);
+
+            c_i = verifier.update_c_i(challenge, s_i_0);
+            prover.update_p_arrays(num_vars, i, challenge);
+        }
+
+        // Space-efficient oracle streaming verification check
+        let final_evals = stream.evaluate_at_point(&verifier.challenges);
+        let mut g_eval = Fr::ONE;
+        for val in final_evals {
+            g_eval *= val;
+        }
+
+        g_eval == c_i
     }
 }

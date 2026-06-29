@@ -276,7 +276,69 @@ pub fn multi_product_eval(polynomials: &[Vec<Fr>], d: usize, v: usize) -> Vec<Fr
         g.push(q_l_prime[i] * q_r_prime[i]);
     }
 
-    //println!("Debugging of multi_product_eval : end");
-
     g
+}
+
+/// Linearly interpolates a set of d+1 evaluations over U_d at a specific challenge point `challenge`.
+/// Expected input layout structure: [p(inf), p(0), p(1), ..., p(d-1)]
+pub fn interpolate_at_point(evals: &[Fr], challenge: Fr) -> Fr {
+    let d = evals.len() - 1;
+    let mut classical_points = Vec::with_capacity(d);
+    for val in 0..d {
+        classical_points.push(Fr::from(val as u64));
+    }
+
+    // 1. Classical Lagrange interpolation over the d finite points (0 to d-1)
+    let mut lagrange_sum = Fr::ZERO;
+    for i in 0..d {
+        let mut numerator = Fr::ONE;
+        let mut denominator = Fr::ONE;
+        let x_i = classical_points[i];
+
+        for j in 0..d {
+            if i != j {
+                let x_j = classical_points[j];
+                numerator *= challenge - x_j;
+                denominator *= x_i - x_j;
+            }
+        }
+        let l_i = numerator * denominator.inverse().unwrap_or(Fr::ZERO);
+        lagrange_sum += evals[i + 1] * l_i; // evals[i+1] corresponds to evaluation of the poly at point 'i'
+    }
+
+    // 2. Vanishing polynomial product: \prod (r_i - x_k)
+    let mut vanishing_prod = Fr::ONE;
+    for x_i in &classical_points {
+        vanishing_prod *= challenge - x_i;
+    }
+
+    // 3. Extract the leading coefficient (evaluation at infinity at index 0)
+    let leading_coeff = evals[0];
+
+    // Combine using Lemma 2 formula
+    (leading_coeff * vanishing_prod) + lagrange_sum
+}
+
+/// NEW !! TO UNDERSTAND
+/// Sequential bookkeeping reduction. Takes a flat subcube chunk of size 2^\omega_1 and 
+/// iteratively folds it down to a single point by applying the window's challenges.
+pub fn fold_hypercube_chunk(chunk: &[Fr], challenges: &[Fr]) -> Fr {
+    let omega_1 = challenges.len();
+    assert_eq!(chunk.len(), 1 << omega_1, "Chunk size mismatch with window size");
+
+    let mut working_buffer = chunk.to_vec();
+
+    for round in 0..omega_1 {
+        let current_size = 1 << (omega_1 - round);
+        let next_size = current_size / 2;
+        let r = challenges[round];
+
+        for idx in 0..next_size {
+            let p0 = working_buffer[idx << 1];
+            let p1 = working_buffer[(idx << 1) | 1];
+            // Linear combination over the boolean coordinate
+            working_buffer[idx] = p0 + r * (p1 - p0);
+        }
+    }
+    working_buffer[0]
 }

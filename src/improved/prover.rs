@@ -1,7 +1,7 @@
+use crate::improved::engine::{EvaluationPoint, get_u_hat_domain};
 use ark_ff::Field;
 use ark_poly::DenseMultilinearExtension;
-use ark_test_curves::bls12_381::Fr;
-use crate::improved::engine::{EvaluationPoint, get_u_hat_domain}; // Ajuste le chemin selon ton projet
+use ark_test_curves::bls12_381::Fr; // Ajuste le chemin selon ton projet
 
 pub struct Prover {
     pub list_of_arrays: Vec<Vec<Fr>>,
@@ -27,7 +27,7 @@ impl Prover {
         let d = list_of_arrays.len();
         Prover { list_of_arrays, d }
     }
-    
+
     /// Computes the round polynomial s_i(u) over U_d_hat (Step 1)
     pub fn compute_s_i(&self, num_vars: usize, round: usize) -> Vec<Fr> {
         let u_d_hat = get_u_hat_domain(self.d);

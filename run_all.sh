@@ -5,7 +5,7 @@ echo "=== [1/2] Data extraction with Rust ==="
 cargo run --release
 
 # cargo build --release
-# perf record --call-graph dwarf ./target/release/first_impl
+# sudo perf record --call-graph dwarf ./target/release/first_impl
 # perf report
 
 # If the benchmark went correctly, we plot the results

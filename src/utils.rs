@@ -4,15 +4,15 @@
 use ark_test_curves::bls12_381::Fr;
 
 // Polynomial types
+use ark_poly::DenseMultilinearExtension;
 use ark_poly::polynomial::multivariate::{SparsePolynomial, SparseTerm, Term};
 use ark_poly::univariate::DensePolynomial;
 use ark_poly::{DenseMVPolynomial, DenseUVPolynomial, Polynomial};
-use ark_poly::DenseMultilinearExtension;
 
-use ark_linear_sumcheck::ml_sumcheck::data_structures::ListOfProductsOfPolynomials;
-use ark_std::rc::Rc;
-use ark_std::rand::Rng;
 use ark_ff::{Field, UniformRand};
+use ark_linear_sumcheck::ml_sumcheck::data_structures::ListOfProductsOfPolynomials;
+use ark_std::rand::Rng;
+use ark_std::rc::Rc;
 
 use itertools::Itertools;
 
@@ -32,19 +32,20 @@ pub fn generate_multivariate_poly_test<R: Rng>(
     rng: &mut R,
     num_vars: usize,
     d: usize,
-) -> (Vec<DenseMultilinearExtension<Fr>>, ListOfProductsOfPolynomials<Fr>) {
-
+) -> (
+    Vec<DenseMultilinearExtension<Fr>>,
+    ListOfProductsOfPolynomials<Fr>,
+) {
     // left bitwise shift of num_vars
     // result : 1000...00 (num_vars 0 after the 1) in binary = 2^num_vars in decimal := size of {0,1}^num_vars
-    let hypercube_size = 1 << num_vars; 
+    let hypercube_size = 1 << num_vars;
 
     // Memory reservation : there will be d multilinear polynomials
     let mut list_of_poly = Vec::with_capacity(d);
     let mut poly_rc_vec = Vec::with_capacity(d);
-    
+
     // 1. Generate d independent dense multilinear extensions with random field elements
     for _ in 0..d {
-
         // Generate all evaluations of p_k(X) at random from X = 0000...00 (0) to X = 111...11 (2^num_vars := hypercube_size)
         let mut evaluations = Vec::with_capacity(hypercube_size);
         for _ in 0..hypercube_size {
@@ -53,7 +54,7 @@ pub fn generate_multivariate_poly_test<R: Rng>(
 
         // Define the MLE p_k from the evaluations
         let poly = DenseMultilinearExtension::from_evaluations_vec(num_vars, evaluations);
-        
+
         // Clone for our local custom interactive protocol execution
         list_of_poly.push(poly.clone());
         // Wrap in Rc (Smart pointer) to comply with Arkworks API
@@ -62,7 +63,7 @@ pub fn generate_multivariate_poly_test<R: Rng>(
 
     // 2. Initialize Arkworks product data structure
     let mut list_of_products = ListOfProductsOfPolynomials::new(num_vars);
-    
+
     // Add the full product p_1 * p_2 * ... * p_d with a generic multiplier coefficient of 1
     list_of_products.add_product(poly_rc_vec, Fr::from(1u64));
 
@@ -86,7 +87,7 @@ pub fn i_to_boolean_point(i: usize, num_vars: usize) -> Vec<Fr> {
 /*
 pub enum PolyType {
     Multilinear,
-    Multivariate(usize), 
+    Multivariate(usize),
 }
 
 pub fn poly_type(poly: &SparsePolynomial<Fr, SparseTerm>) -> PolyType {

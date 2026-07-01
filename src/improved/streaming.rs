@@ -1,8 +1,8 @@
-use ark_poly::{MultilinearExtension, DenseMultilinearExtension};
 use ark_ff::PrimeField;
+use ark_poly::{DenseMultilinearExtension, MultilinearExtension};
 
 /// A trait representing a stream of evaluations for d polynomials.
-/// This allows the Prover to consume data chunk by chunk without loading 
+/// This allows the Prover to consume data chunk by chunk without loading
 /// the entire hypercube into RAM.
 pub trait PolynomialStream<F: PrimeField> {
     /// Returns the total number of variables in the global protocol (l or v).
@@ -17,7 +17,7 @@ pub trait PolynomialStream<F: PrimeField> {
     fn next_chunk(&mut self, chunk_size: usize) -> Option<Vec<Vec<F>>>;
 
     /// Resets the stream cursor back to the beginning.
-    /// This is crucial because the algorithm rewinds and re-reads the full stream 
+    /// This is crucial because the algorithm rewinds and re-reads the full stream
     /// at each new window step 't'.
     fn rewind(&mut self);
 
@@ -41,18 +41,27 @@ impl<'a, F: PrimeField> MockStream<'a, F> {
         for poly in data {
             assert_eq!(poly.num_vars(), l, "All MLEs must have l variables");
         }
-        Self { l, d, data, cursor: 0 }
+        Self {
+            l,
+            d,
+            data,
+            cursor: 0,
+        }
     }
 }
 
 impl<'a, F: PrimeField> PolynomialStream<F> for MockStream<'a, F> {
-    fn num_vars(&self) -> usize { self.l }
-    fn degree(&self) -> usize { self.d }
+    fn num_vars(&self) -> usize {
+        self.l
+    }
+    fn degree(&self) -> usize {
+        self.d
+    }
 
     fn next_chunk(&mut self, chunk_size: usize) -> Option<Vec<Vec<F>>> {
         let total_size = 1 << self.l; // 2^l := #({0,1}^l)
 
-        // If we have already processed the entire stream 
+        // If we have already processed the entire stream
         // i.e. all the chunks have been extracted
         if self.cursor >= total_size {
             return None;
@@ -61,7 +70,7 @@ impl<'a, F: PrimeField> PolynomialStream<F> for MockStream<'a, F> {
         let mut chunk_result = Vec::with_capacity(self.d);
 
         // Size of each chunk : end-start
-        // Either equal to chunk_size or less 
+        // Either equal to chunk_size or less
         // (if we reach the end of the evaluation vector of a poly)
         let start = self.cursor; // self.cursor will be equal to 0, chunk_size, 2.chunk_size, ..., m.chunk_size
         let end = (start + chunk_size).min(total_size); // end = min(start + chunk_size, total_size)
@@ -82,6 +91,9 @@ impl<'a, F: PrimeField> PolynomialStream<F> for MockStream<'a, F> {
 
     fn evaluate_at_point(&self, point: &[F]) -> Vec<F> {
         // Leverages Arkworks internal MLE evaluation for mock testing
-        self.data.iter().map(|poly| poly.evaluate(point).unwrap()).collect()
+        self.data
+            .iter()
+            .map(|poly| poly.evaluate(point).unwrap())
+            .collect()
     }
 }

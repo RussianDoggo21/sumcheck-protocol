@@ -1,6 +1,6 @@
 use ark_ff::Field;
-use ark_test_curves::bls12_381::Fr;
 use ark_poly::{DenseMultilinearExtension, MultilinearExtension};
+use ark_test_curves::bls12_381::Fr;
 
 use crate::improved::arithmetic::adaptive_dot_product_accumulate;
 
@@ -54,7 +54,9 @@ pub fn compute_kernel(k: usize) -> Vec<Fr> {
         let x_i = x_points[i];
 
         for j in 0..k {
-            if j == i { continue; }
+            if j == i {
+                continue;
+            }
             let x_j = x_points[j];
 
             // Computation of the numerator and the denominator factor by factor
@@ -63,25 +65,22 @@ pub fn compute_kernel(k: usize) -> Vec<Fr> {
         }
 
         // Single modular inverse per Lagrange coefficient
-        let lagrange_coeff = numerator_prod * denominator_prod.inverse().expect("Unexpected zero denominator");
+        let lagrange_coeff = numerator_prod
+            * denominator_prod
+                .inverse()
+                .expect("Unexpected zero denominator");
         kernel.push(lagrange_coeff);
     }
 
     kernel
 }
 
-
 /// Extrapolates a vector of evaluations using an ultra-optimized sliding window approach.
 /// - `evals_`:  initially contains e_k (size k+1): [p(inf), p(0), p(1), ..., p(k-1)]
 /// - `kernel`: precomputed kernel slice of size k+1, containing [C_inf, C_0, ..., C_{k-1}]
 /// - `k`: Base size of the window
 /// - `num_extrap`: number of additional points to calculate (e.g., 4 to grow from e_4 to e_8)
-pub fn univariate_extrapolate(
-    evals: &mut Vec<Fr>, 
-    kernel: &[Fr], 
-    k: usize, 
-    num_extrap: usize
-) {
+pub fn univariate_extrapolate(evals: &mut Vec<Fr>, kernel: &[Fr], k: usize, num_extrap: usize) {
     evals.reserve(num_extrap);
 
     let kernel_inf = kernel[0];
@@ -91,24 +90,27 @@ pub fn univariate_extrapolate(
     let inf_term = p_inf * kernel_inf;
 
     for c in 0..num_extrap {
-
         // Target initialized with the infinity term
         let mut next_val = inf_term;
-        
+
         // Extract the sub-slice of Fr elements currently inside our shifting window
         // &evals[start_idx..end_idx] := p(c), ..., p(c+k-1)
         let start_idx = 1 + c;
         let end_idx = start_idx + k;
 
         // next_val += dot_product(evals[strat_idx..end_idx], kernel_classical)
-        adaptive_dot_product_accumulate(&mut next_val, &evals[start_idx..end_idx], kernel_classical);
-        
+        adaptive_dot_product_accumulate(
+            &mut next_val,
+            &evals[start_idx..end_idx],
+            kernel_classical,
+        );
+
         evals.push(next_val);
     }
 }
 
 /// Performs multivariate polynomial extrapolation from U_k^v to U_d^v.
-/// 
+///
 /// - `initial_evals`: Flattened evaluations over U_k^v (size must be (k+1)^num_vars)
 /// - `k`: Degree parameter / initial window size
 /// - `num_extrap`: Number of extra points to compute per axis (d - k)
@@ -156,7 +158,6 @@ pub fn multivariate_extrapolate(
         // Iterate over all slices orthogonal to dimension j (xl, xr)
         for xl in 0..left_variants {
             for xr in 0..right_variants {
-                
                 // Calculate 1D flattened memory offsets
                 // BLACK-BOXED
                 let current_line_offset = xl * size_k * right_variants + xr;
@@ -196,17 +197,25 @@ pub fn multivariate_extrapolate(
 /// * `d` - The total number of polynomials to multiply
 /// * `v` - The number of variables for the polynomials in this current sub-cube
 pub fn multi_product_eval(polynomials: &[Vec<Fr>], d: usize, v: usize) -> Vec<Fr> {
-
-    assert_eq!(polynomials.len(), d, "The number of polynomials provided must match d");
-    assert!(d > 0, "Cannot compute the product of an empty slice of polynomials");
+    assert_eq!(
+        polynomials.len(),
+        d,
+        "The number of polynomials provided must match d"
+    );
+    assert!(
+        d > 0,
+        "Cannot compute the product of an empty slice of polynomials"
+    );
 
     let expected_len = 1 << v; //#({0,1}^v) = 2^v
     for (i, poly) in polynomials.iter().enumerate() {
         assert_eq!(
-            poly.len(), 
-            expected_len, 
-            "Polynomial at index {} does not have the expected size 2^{} = {}", 
-            i, v, expected_len
+            poly.len(),
+            expected_len,
+            "Polynomial at index {} does not have the expected size 2^{} = {}",
+            i,
+            v,
+            expected_len
         );
     }
 
@@ -226,19 +235,19 @@ pub fn multi_product_eval(polynomials: &[Vec<Fr>], d: usize, v: usize) -> Vec<Fr
             for chunk in 0..(current_grid.len() / chunk_size) {
                 let offset = chunk * chunk_size; // BLACK-BOXED
                 for i in 0..stride {
-                    let p0 = current_grid[offset + i];          // Evaluation at point 0
+                    let p0 = current_grid[offset + i]; // Evaluation at point 0
                     let p1 = current_grid[offset + stride + i]; // Evaluation at point 1
-                    let p_inf = p1 - p0;                        // Projective limit at infinity
+                    let p_inf = p1 - p0; // Projective limit at infinity
 
                     // Reorder elements into the target layout based explicitly on U_1 domain
                     for (u_idx, u_point) in u_1_domain.iter().enumerate() {
                         match u_point {
                             EvaluationPoint::Infinity => {
                                 next_grid[offset + u_idx * stride + i] = p_inf;
-                            },
+                            }
                             EvaluationPoint::Value(0) => {
                                 next_grid[offset + u_idx * stride + i] = p0;
-                            },
+                            }
                             _ => unreachable!("U_1 domain should only contain Inf and 0"),
                         }
                     }
@@ -250,14 +259,14 @@ pub fn multi_product_eval(polynomials: &[Vec<Fr>], d: usize, v: usize) -> Vec<Fr
     }
 
     // 2. Divide: split the polynomials into two halves
-    let m = d/2;
-    
+    let m = d / 2;
+
     // Recursive calls for left and right sub-products
     let q_l = multi_product_eval(&polynomials[0..m], m, v);
     let q_r = multi_product_eval(&polynomials[m..d], d - m, v);
 
     // 3. Extrapolate both halves to the target domain U_d^v
-    // For q_l: currently on U_m^v, needs to reach U_d^v. 
+    // For q_l: currently on U_m^v, needs to reach U_d^v.
     // Number of classical points to add = d - m
     let num_extrap_l = d - m;
     let q_l_prime = multivariate_extrapolate(&q_l, m, num_extrap_l, v);
@@ -268,7 +277,11 @@ pub fn multi_product_eval(polynomials: &[Vec<Fr>], d: usize, v: usize) -> Vec<Fr
     let q_r_prime = multivariate_extrapolate(&q_r, d - m, num_extrap_r, v);
 
     // Sanity check: both extended cubes must have identical sizes
-    assert_eq!(q_l_prime.len(), q_r_prime.len(), "Size mismatch during pointwise multiplication");
+    assert_eq!(
+        q_l_prime.len(),
+        q_r_prime.len(),
+        "Size mismatch during pointwise multiplication"
+    );
 
     // 4. Combine: Pointwise product of evaluations (Hadamard product)
     let mut g = Vec::with_capacity(q_l_prime.len());
@@ -319,12 +332,15 @@ pub fn interpolate_at_point(evals: &[Fr], challenge: Fr) -> Fr {
     (leading_coeff * vanishing_prod) + lagrange_sum
 }
 
-/// NEW !! TO UNDERSTAND
-/// Sequential bookkeeping reduction. Takes a flat subcube chunk of size 2^\omega_1 and 
-/// iteratively folds it down to a single point by applying the window's challenges.
+/// Sequential bookkeeping reduction. Takes a flat subcube chunk of size 2^w_1 and
+/// iteratively folds it down to a single point by applying the window's challenges (r1, ..., r_w1).
 pub fn fold_hypercube_chunk(chunk: &[Fr], challenges: &[Fr]) -> Fr {
     let omega_1 = challenges.len();
-    assert_eq!(chunk.len(), 1 << omega_1, "Chunk size mismatch with window size");
+    assert_eq!(
+        chunk.len(),
+        1 << omega_1,
+        "Chunk size mismatch with window size"
+    );
 
     let mut working_buffer = chunk.to_vec();
 

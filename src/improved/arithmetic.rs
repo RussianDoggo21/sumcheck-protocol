@@ -1,7 +1,7 @@
-use ark_test_curves::bls12_381::{Fr,FrConfig};
-use ark_ff::{BigInteger, BigInteger256, BigInteger384, MontConfig, Field, PrimeField};
+use ark_ff::{BigInteger, BigInteger256, BigInteger384, Field, MontConfig, PrimeField};
+use ark_test_curves::bls12_381::{Fr, FrConfig};
 
-// Preliminary work 
+// Preliminary work
 // Heavy computation of the constant 2^256, once and for all
 lazy_static::lazy_static! {
     static ref R_256: Fr = {
@@ -13,12 +13,12 @@ lazy_static::lazy_static! {
 /// Computes the raw integer product Ti = small * big (WITHOUT reduction)
 /// Returns a BigInteger384 (6 limbs) to avoid overflows
 pub fn small_big_mul_raw(small: u64, big: &Fr) -> BigInteger384 {
-    // Originally big is in the Montgomery Form 
-    // big = big' * R mod q, with big' being the actual field element value 
+    // Originally big is in the Montgomery Form
+    // big = big' * R mod q, with big' being the actual field element value
     // and R = 2^256 (the Montgomery constant for a 256-bit field).
-    // e.g. big' = 12*2^0 + 3*2^64 + 5*2^128 + 7*2^292 
+    // e.g. big' = 12*2^0 + 3*2^64 + 5*2^128 + 7*2^292
 
-    // big_repr returns an object BigInt which represents the raw internal limbs 
+    // big_repr returns an object BigInt which represents the raw internal limbs
     // of the Montgomery representation, encoded as a 256-bit integer.
     // e.g. big.into_bigint() = BigInt([12, 3, 5, 7])
     let mut big_repr = big.into_bigint();
@@ -26,7 +26,7 @@ pub fn small_big_mul_raw(small: u64, big: &Fr) -> BigInteger384 {
     // as_mut extracts a mutable reference to the underlying u64 array of big_repr
     // e.g. big_repr.as_mut() = &mut [12, 3, 5, 7]
     let limbs = big_repr.as_mut();
-    
+
     let mut res_limbs = [0u64; 6]; // Definition of the limbs to be store the result of each multiplication
     let mut carry: u128 = 0; // Carry of each multiplication
     let small_u128 = small as u128; // Conversion for the multiplication between 2 numbers u128
@@ -47,7 +47,7 @@ pub fn small_big_mul_raw(small: u64, big: &Fr) -> BigInteger384 {
 
 /// Computes a fast dot product between a window of Fr elements (which might contain small integers)
 /// and precomputed Fr coefficients, accumulating the result into `accumulator`.
-/// 
+///
 /// It dynamically optimizes the execution by using `small_big_mul_raw` when the element
 /// is small, and falls back to full field multiplication when it has already been extrapolated.
 pub fn adaptive_dot_product_accumulate(
@@ -67,9 +67,8 @@ pub fn adaptive_dot_product_accumulate(
     let mut slow_path_sum = Fr::ZERO;
 
     for i in 0..coefficients.len() {
-
         // Structure of bigint : pub struct BigInteger256(pub [u64; 4]);
-        // To access to its i-th element, we must first access the anonymous fiel '0' (the array) 
+        // To access to its i-th element, we must first access the anonymous fiel '0' (the array)
         // Only after can we specify the index of the array element we wish to access
         // e.g. to get access to the i-th element of bigint : bigint.0[i]
         let bigint = window_evals[i].into_bigint();
@@ -79,7 +78,9 @@ pub fn adaptive_dot_product_accumulate(
         if bigint.0[1] == 0 && bigint.0[2] == 0 && bigint.0[3] == 0 {
             // FAST-PATH: It's a small integer (like 0, 1, or a small bound)
             let small = bigint.0[0];
-            if small == 0 { continue; }
+            if small == 0 {
+                continue;
+            }
 
             let t_i = small_big_mul_raw(small, &coefficients[i]);
             global_t.add_with_carry(&t_i);
@@ -97,12 +98,7 @@ pub fn adaptive_dot_product_accumulate(
 
     // Handle overflow limbs for the fast-path if present
     if global_t.0[4] > 0 || global_t.0[5] > 0 {
-        let overflow_limbs = BigInteger256::new([
-            global_t.0[4],
-            global_t.0[5],
-            0,
-            0
-        ]);
+        let overflow_limbs = BigInteger256::new([global_t.0[4], global_t.0[5], 0, 0]);
         let overflow_fr = Fr::from_bigint(overflow_limbs).unwrap();
 
         // Shift applied to the limbs scale : [2^0, 2^64, 2^128, 2^192]
@@ -116,13 +112,13 @@ pub fn adaptive_dot_product_accumulate(
     *accumulator += fast_path_sum + slow_path_sum;
 }
 
-/* 
+/*
 /// Quick dot product combining delayed reduction and small-big multiplication
 /// Usage of a montgomery reduction  rather than a Barrett reduction
 pub fn fast_dot_product_strided(small_values: &[u64], coefficients: &[Fr], offset : usize, stride : usize) -> Fr {
     let required_length = offset + (coefficients.len() - 1) * stride;
     assert!(
-        small_values.len() > required_length, 
+        small_values.len() > required_length,
         "The global evaluations array is too small for the requested stride and coefficients"
     );
 
@@ -130,7 +126,7 @@ pub fn fast_dot_product_strided(small_values: &[u64], coefficients: &[Fr], offse
     let mut global_t = BigInteger384::from(0u64);
 
     // We go throught the Fr elements (vector coefficients) with the stride given in parameter
-    // We also take into account an offset 
+    // We also take into account an offset
     // Useful for the prover in protcol.rs
     // ex: offset = 0, stride = 2 for p0 (0, 2, 4, 6...)
     // ex: offset = 1, stride = 2 for p1 (1, 3, 5, 7...)
@@ -138,7 +134,7 @@ pub fn fast_dot_product_strided(small_values: &[u64], coefficients: &[Fr], offse
         let idx = offset + i * stride;
         let small = small_values[idx];
         if small == 0 { continue; }
-        
+
         let t_i = small_big_mul_raw(small, coeff);
         global_t.add_with_carry(&t_i);
     }
@@ -166,10 +162,10 @@ pub fn fast_dot_product_strided(small_values: &[u64], coefficients: &[Fr], offse
             0,
             0
         ]);
-        
+
         // Conversion of this overflow in field element Fr (Montgomery reduction)
         let overflow_fr = Fr::from_bigint(overflow_limbs).unwrap();
-        
+
         // Since we shifted the limbs of 4 positions towards the left, we must shift towards the right also 4times
         // We multiply by the constant R_256 (2^256) once to do so
         final_sum += overflow_fr * *R_256;

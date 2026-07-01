@@ -1,8 +1,8 @@
 use ark_ff::Field;
-use ark_poly::{DenseMultilinearExtension, MultilinearExtension};
-use ark_test_curves::bls12_381::Fr;
 use ark_ff::UniformRand;
+use ark_poly::{DenseMultilinearExtension, MultilinearExtension};
 use ark_std::rand::Rng;
+use ark_test_curves::bls12_381::Fr;
 
 pub struct Verifier {
     pub challenges: Vec<Fr>,
@@ -25,7 +25,7 @@ impl Verifier {
         self.s_i_received = Some(s_i);
     }
 
-    /// Generates a random challenge r_i 
+    /// Generates a random challenge r_i
     pub fn send_challenge<R: Rng>(&mut self, rng: &mut R) -> Fr {
         let r_i = Fr::rand(rng);
         self.challenges.push(r_i);
@@ -34,7 +34,10 @@ impl Verifier {
 
     /// Computes s_i(0) dynamically using the relation s_i(0) := C_{i-1} - s_i(1) (Step 3)
     pub fn compute_s_i_0(&self, c_minus_1: Fr) -> Fr {
-        let s_i = self.s_i_received.as_ref().expect("No s_i polynomial received yet");
+        let s_i = self
+            .s_i_received
+            .as_ref()
+            .expect("No s_i polynomial received yet");
         // In U_d_hat = [inf, 1, 2, ..., d-1], the evaluation s_i(1) is at index 1
         let s_i_1 = s_i[1];
         c_minus_1 - s_i_1
@@ -43,8 +46,11 @@ impl Verifier {
     /// Computes C_i := s_i(r_i) by interpolating the received evaluations at point r_i,
     /// strictly implementing Lemma 2 from the paper using the infinity evaluation.
     pub fn update_c_i(&self, r_i: Fr, s_i_0: Fr) -> Fr {
-        let s_i_evals = self.s_i_received.as_ref().expect("No s_i polynomial received yet");
-        
+        let s_i_evals = self
+            .s_i_received
+            .as_ref()
+            .expect("No s_i polynomial received yet");
+
         // According to Lemma 2, our set of d distinct finite evaluation points is:
         // x_1 = 0, x_2 = 1, ..., x_d = d-1
         // Let's build a map of (x_k, s_i(x_k))
@@ -68,8 +74,11 @@ impl Verifier {
                     denominator *= x_i - x_j;
                 }
             }
-            
-            let l_i = numerator * denominator.inverse().expect("Unexpected zero denominator in Lagrange");
+
+            let l_i = numerator
+                * denominator
+                    .inverse()
+                    .expect("Unexpected zero denominator in Lagrange");
             lagrange_sum += finite_points[i].1 * l_i;
         }
 
@@ -91,7 +100,7 @@ impl Verifier {
     /// Oracle verification at the very end: g(r_1, ..., r_ell) == C_ell
     pub fn final_check(&self, list_of_poly: &[DenseMultilinearExtension<Fr>], c_l: Fr) -> bool {
         assert_eq!(list_of_poly.len(), self.d);
-        
+
         // Evaluate every single p_k at the collected challenge point (r_1, ..., r_ell)
         let mut g_eval = Fr::ONE;
         for poly in list_of_poly {

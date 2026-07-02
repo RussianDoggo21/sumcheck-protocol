@@ -70,6 +70,13 @@ pub fn generate_multivariate_poly_test<R: Rng>(
     (list_of_poly, list_of_products)
 }
 
+
+
+// =================================================================================================
+// 2. OBSOLETE UNILINEAR FUNCTIONS (COMMENTED OUT FOR FUTURE REFERENCE / BACKUP)
+// =================================================================================================
+/*
+
 /// Converts a flat index integer into its binary/boolean coordinates over the {0,1}^num_vars hypercube
 pub fn i_to_boolean_point(i: usize, num_vars: usize) -> Vec<Fr> {
     let mut n = i;
@@ -80,11 +87,7 @@ pub fn i_to_boolean_point(i: usize, num_vars: usize) -> Vec<Fr> {
     }
     point
 }
-
-// =================================================================================================
-// 2. OBSOLETE UNILINEAR FUNCTIONS (COMMENTED OUT FOR FUTURE REFERENCE / BACKUP)
-// =================================================================================================
-/*
+    
 pub enum PolyType {
     Multilinear,
     Multivariate(usize),

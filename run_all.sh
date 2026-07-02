@@ -6,7 +6,7 @@ cargo run --release
 
 # cargo build --release
 # sudo perf record --call-graph dwarf ./target/release/first_impl
-# perf report
+# sudo perf report
 
 # If the benchmark went correctly, we plot the results
 if [ $? -eq 0 ]; then

@@ -24,7 +24,7 @@ fn main() {
     let num_runs = 5;
 
     // Array of degrees to analyze sequentially
-    let degrees_to_test = [3, 6, 9];
+    let degrees_to_test = [3];
 
     println!("==================================================");
     println!("       STARTING SUMCHECK PROTOCOL BENCHMARK        ");

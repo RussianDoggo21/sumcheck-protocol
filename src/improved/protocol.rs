@@ -1,6 +1,6 @@
 use crate::improved::engine::EvaluationPoint;
 use crate::improved::engine::{
-    fold_hypercube_chunk, get_u_hat_domain, interpolate_at_point, multi_product_eval,
+    fold_hypercube_chunk, get_u_hat_domain, dynamic_folding_step, multi_product_eval,
 };
 use crate::improved::prover::Prover;
 use crate::improved::streaming::PolynomialStream;
@@ -248,21 +248,10 @@ impl SumcheckProtocol<Fr> for EvalProductSV {
             c_i = verifier.update_c_i(challenge, s_i_0);
 
             // -------------------------------------------------------------------------
-            // DYNAMIC FOLDING: Shrunk grid q from (d+1)^(rem+1) down to (d+1)^rem
+            // OPTIMIZED DYNAMIC FOLDING (Infinity-Aware): Profiled via engine::dynamic_folding_step
             // -------------------------------------------------------------------------
             if remaining_vars > 0 {
-                let next_grid_size = usize::pow(base, remaining_vars as u32);
-                let mut next_q = vec![Fr::ZERO; next_grid_size];
-                let mut evals_to_interpolate = vec![Fr::ZERO; d + 1];
-
-                for future_idx in 0..next_grid_size {
-                    for current_var_idx in 0..=d {
-                        let old_grid_idx = current_var_idx + future_idx * base;
-                        evals_to_interpolate[current_var_idx] = q[old_grid_idx];
-                    }
-                    next_q[future_idx] = interpolate_at_point(&evals_to_interpolate, challenge);
-                }
-                q = next_q;
+                q = dynamic_folding_step(&q, challenge, d, base, remaining_vars);
             }
         }
 

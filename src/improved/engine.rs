@@ -358,3 +358,68 @@ pub fn fold_hypercube_chunk(chunk: &[Fr], challenges: &[Fr]) -> Fr {
     }
     working_buffer[0]
 }
+
+
+/// Performs the infinity-aware dynamic folding step over the evaluation grid
+#[inline(never)]
+pub fn dynamic_folding_step<F: Field>(
+    q: &[F],
+    challenge: F,
+    d: usize,
+    base: usize,
+    remaining_vars: usize,
+) -> Vec<F> {
+    let next_grid_size = usize::pow(base, remaining_vars as u32);
+    let mut next_q = vec![F::zero(); next_grid_size];
+
+    // --- PHASE 1: Pre-compute scalars for the unique round challenge ---
+    
+    // Finite evaluation points are {0, 1, ..., d-1} (size d)
+    let mut classical_points = vec![F::zero(); d];
+    for val in 0..d {
+        classical_points[val] = F::from(val as u64);
+    }
+
+    // 1.(a) Pre-compute the classical Lagrange basis coefficients for finite points
+    let mut finite_lagrange_coeffs = vec![F::zero(); d];
+    for i in 0..d {
+        let mut numerator = F::one();
+        let mut denominator = F::one();
+        let x_i = classical_points[i];
+        
+        for j in 0..d {
+            if i != j {
+                let x_j = classical_points[j];
+                numerator *= challenge - x_j;
+                denominator *= x_i - x_j;
+            }
+        }
+        finite_lagrange_coeffs[i] = numerator * denominator.inverse().unwrap_or(F::zero());
+    }
+
+    // 1.(b) Pre-compute the vanishing polynomial product: \prod_{k=0}^{d-1} (challenge - x_k)
+    let mut vanishing_prod = F::one();
+    for &x_k in classical_points.iter() {
+        vanishing_prod *= challenge - x_k;
+    }
+
+    // --- PHASE 2: Critical cross-dimension dot product loop (O(next_grid_size * d)) ---
+    for future_idx in 0..next_grid_size {
+        // Extract the evaluation at infinity (index 0 of current variable stride)
+        let old_grid_idx_inf = future_idx * base;
+        let leading_coeff = q[old_grid_idx_inf];
+
+        // Part A from Lemma 2: leading_coeff * vanishing_prod
+        let mut interpolated_val = leading_coeff * vanishing_prod;
+
+        // Part B from Lemma 2: \sum_{i=0}^{d-1} evals[i + 1] * finite_lagrange_coeffs[i]
+        for i in 0..d {
+            let old_grid_idx_finite = (i + 1) + future_idx * base;
+            interpolated_val += q[old_grid_idx_finite] * finite_lagrange_coeffs[i];
+        }
+
+        next_q[future_idx] = interpolated_val;
+    }
+
+    next_q
+}

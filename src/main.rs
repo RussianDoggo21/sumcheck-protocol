@@ -17,14 +17,9 @@ use crate::improved::streaming::MockStream;
 use crate::utils::generate_multivariate_poly_test;
 
 fn main() {
-    // Parameters configuration:
-    // - max_vars : Benchmark from 4 up to max_vars variables (2^max_vars points)
-    // - num_runs : Number of iterations per variable count to get a stable average
-    let max_vars = 14; // Réduit à 14 pour éviter des temps d'attente trop longs à haut degré (d=9)
+    let max_vars = 14; 
     let num_runs = 5;
-
-    // Array of degrees to analyze sequentially
-    let degrees_to_test = [3];
+    let degrees_to_test = [3, 6, 9]; // Ajout des degrés cibles pour matcher ton script python
 
     println!("==================================================");
     println!("       STARTING SUMCHECK PROTOCOL BENCHMARK        ");
@@ -40,85 +35,80 @@ fn main() {
     println!("\n[GLOBAL OK] All benchmarks completed successfully!");
 }
 
-/// Orchestrates the benchmarks over a range of variables for a given degree d
-/// and saves the results into a distinct, degree-specific CSV file.
 pub fn test_range_variables(max_vars: usize, d: usize, num_runs: u32) {
-    // Dynamic filename based on the current degree parameter
     let filename = format!("benchmark_results_d{}.csv", d);
     let mut file = File::create(&filename).expect("Unable to create file");
 
-    // Write CSV header to include EvalProductSV
+    // En-tête mis à jour avec toutes les sous-phases
     writeln!(
         file,
-        "Variables,Arkworks_ms,LinearTimeSC_ms,EvalProductSV_ms"
+        "Variables,Arkworks_ms,LinearTimeSC_ms,EvalProductSV_ms,EvalProductSV_Precomp_ms,EvalProductSV_Final_ms"
     )
     .unwrap();
     file.flush().unwrap();
 
-    // Warm up from 4 variables up to max_vars
     for num_v in 4..=max_vars {
         println!("\n==================================================");
         println!(
             " Benchmarking for {} variables (2^{} = {} points, d={})",
-            num_v,
-            num_v,
-            1 << num_v,
-            d
+            num_v, num_v, 1 << num_v, d
         );
         println!(" Average over {} runs...", num_runs);
         println!("==================================================");
 
         let mut total_ark = Duration::ZERO;
         let mut total_opt = Duration::ZERO;
-        let mut total_sv = Duration::ZERO;
+        let mut total_sv_precomp = Duration::ZERO;
+        let mut total_sv_final = Duration::ZERO;
 
         for run in 1..=num_runs {
             print!("   Run {}/{}... ", run, num_runs);
             stdout().flush().unwrap();
 
-            let (d_ark, d_opt, d_sv) = multivariate_test(num_v, d);
+            let (d_ark, d_opt, d_sv_precomp, d_sv_final) = multivariate_test(num_v, d);
 
             total_ark += d_ark;
             total_opt += d_opt;
-            total_sv += d_sv;
+            total_sv_precomp += d_sv_precomp;
+            total_sv_final += d_sv_final;
 
             println!("Done.");
         }
 
-        // Compute averages
         let avg_ark = total_ark / num_runs;
         let avg_opt = total_opt / num_runs;
-        let avg_sv = total_sv / num_runs;
+        let avg_sv_precomp = total_sv_precomp / num_runs;
+        let avg_sv_final = total_sv_final / num_runs;
+        let avg_sv_total = avg_sv_precomp + avg_sv_final;
 
-        // Convert Durations to milliseconds (f64)
         let duration_ark_ms = avg_ark.as_secs_f64() * 1000.0;
         let duration_opt_ms = avg_opt.as_secs_f64() * 1000.0;
-        let duration_sv_ms = avg_sv.as_secs_f64() * 1000.0;
+        let duration_sv_precomp_ms = avg_sv_precomp.as_secs_f64() * 1000.0;
+        let duration_sv_final_ms = avg_sv_final.as_secs_f64() * 1000.0;
+        let duration_sv_total_ms = avg_sv_total.as_secs_f64() * 1000.0;
 
-        // Save benchmarks to the dynamic CSV file
+        // Sauvegarde de l'intégralité des données mesurées
         writeln!(
             file,
-            "{},{},{},{}",
-            num_v, duration_ark_ms, duration_opt_ms, duration_sv_ms
+            "{},{},{},{},{},{}",
+            num_v, duration_ark_ms, duration_opt_ms, duration_sv_total_ms, duration_sv_precomp_ms, duration_sv_final_ms
         )
         .unwrap();
         file.flush().unwrap();
 
         println!("\n -> Average Arkworks     : {:.4} ms", duration_ark_ms);
         println!(" -> Average LinearTimeSC  : {:.4} ms", duration_opt_ms);
-        println!(" -> Average EvalProductSV : {:.4} ms", duration_sv_ms);
+        println!(" -> Average EvalProductSV : {:.4} ms (Total)", duration_sv_total_ms);
+        println!("       |-- Precomputation : {:.4} ms", duration_sv_precomp_ms);
+        println!("       |-- Final Phase    : {:.4} ms", duration_sv_final_ms);
     }
     println!("\n[OK] Series complete! Results saved in '{}'.", filename);
 }
 
-/// Runs a single multivariate test instance comparing Arkworks, LinearTimeSC, and EvalProductSV.
-fn multivariate_test(num_vars: usize, d: usize) -> (Duration, Duration, Duration) {
+fn multivariate_test(num_vars: usize, d: usize) -> (Duration, Duration, Duration, Duration) {
     let mut rng = rand::thread_rng();
-
-    // 1. Generate the random multilinear extensions and the official Arkworks data structure
     let (list_of_poly, list_of_products) = generate_multivariate_poly_test(&mut rng, num_vars, d);
 
-    // 2. Local exact sum calculation over the hypercube to provide the correct 'expected_sum' claim
     let hypercube_size = 1 << num_vars;
     let mut expected_sum = Fr::ZERO;
     for x in 0..hypercube_size {
@@ -129,19 +119,13 @@ fn multivariate_test(num_vars: usize, d: usize) -> (Duration, Duration, Duration
         expected_sum += product_at_x;
     }
 
-    // 3. Benchmark Arkworks native multi-factor MLSumcheck implementation
     let start_arkworks = Instant::now();
     let proof = MLSumcheck::prove(&list_of_products).expect("The Arkworks prover failed");
     let duration_arkworks = start_arkworks.elapsed();
 
-    // Verify Arkworks sum matches our calculated one (sanity check)
     let ark_sum = MLSumcheck::extract_sum(&proof);
-    assert_eq!(
-        expected_sum, ark_sum,
-        "Local hypercube sum mismatch with Arkworks sum extraction!"
-    );
+    assert_eq!(expected_sum, ark_sum, "Local hypercube sum mismatch!");
 
-    // 4. Benchmark our custom interactive LinearTime_SC protocol
     let linear_time_protocol = LinearTimeSC;
     let l = list_of_poly[0].num_vars();
     let d_len = list_of_poly.len();
@@ -150,26 +134,19 @@ fn multivariate_test(num_vars: usize, d: usize) -> (Duration, Duration, Duration
     let start_improved = Instant::now();
     let verifier_accepted_opt = linear_time_protocol.run(&mut stream_opt, expected_sum);
     let duration_improved = start_improved.elapsed();
+    assert!(verifier_accepted_opt);
 
-    assert!(
-        verifier_accepted_opt,
-        "Security Error: The LinearTimeSC Verifier REJECTED the proof for {} variables!",
-        num_vars
-    );
-
-    // 5. Benchmark our custom EvalProductSV protocol (Small-Value / Grid Window emulation)
     let eval_product_sv_protocol = EvalProductSV::new(d_len, l);
     let mut stream_sv = MockStream::new(l, d_len, &list_of_poly);
 
-    let start_sv = Instant::now();
-    let verifier_accepted_sv = eval_product_sv_protocol.run(&mut stream_sv, expected_sum);
-    let duration_sv = start_sv.elapsed();
+    let start_precomp = Instant::now();
+    let precomp_output = eval_product_sv_protocol.precomputation_phase(&mut stream_sv, expected_sum);
+    let duration_sv_precomp = start_precomp.elapsed();
 
-    assert!(
-        verifier_accepted_sv,
-        "Security Error: The EvalProductSV Verifier REJECTED the proof for {} variables!",
-        num_vars
-    );
+    let start_final = Instant::now();
+    let verifier_accepted_sv = eval_product_sv_protocol.final_phase(&mut stream_sv, precomp_output);
+    let duration_sv_final = start_final.elapsed();
+    assert!(verifier_accepted_sv);
 
-    (duration_arkworks, duration_improved, duration_sv)
+    (duration_arkworks, duration_improved, duration_sv_precomp, duration_sv_final)
 }

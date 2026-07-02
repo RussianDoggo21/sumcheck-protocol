@@ -75,40 +75,6 @@ pub fn compute_kernel(k: usize) -> Vec<Fr> {
     kernel
 }
 
-/// Extrapolates a vector of evaluations using an ultra-optimized sliding window approach.
-/// - `evals_`:  initially contains e_k (size k+1): [p(inf), p(0), p(1), ..., p(k-1)]
-/// - `kernel`: precomputed kernel slice of size k+1, containing [C_inf, C_0, ..., C_{k-1}]
-/// - `k`: Base size of the window
-/// - `num_extrap`: number of additional points to calculate (e.g., 4 to grow from e_4 to e_8)
-pub fn univariate_extrapolate(evals: &mut Vec<Fr>, kernel: &[Fr], k: usize, num_extrap: usize) {
-    evals.reserve(num_extrap);
-
-    let kernel_inf = kernel[0];
-    let kernel_classical = &kernel[1..];
-
-    let p_inf = evals[0];
-    let inf_term = p_inf * kernel_inf;
-
-    for c in 0..num_extrap {
-        // Target initialized with the infinity term
-        let mut next_val = inf_term;
-
-        // Extract the sub-slice of Fr elements currently inside our shifting window
-        // &evals[start_idx..end_idx] := p(c), ..., p(c+k-1)
-        let start_idx = 1 + c;
-        let end_idx = start_idx + k;
-
-        // next_val += dot_product(evals[strat_idx..end_idx], kernel_classical)
-        adaptive_dot_product_accumulate(
-            &mut next_val,
-            &evals[start_idx..end_idx],
-            kernel_classical,
-        );
-
-        evals.push(next_val);
-    }
-}
-
 /// Performs multivariate polynomial extrapolation from U_k^v to U_d^v.
 ///
 /// - `initial_evals`: Flattened evaluations over U_k^v (size must be (k+1)^num_vars)
@@ -130,62 +96,65 @@ pub fn multivariate_extrapolate(
         "Initial evaluations vector size does not match (k+1)^v"
     );
 
-    // 1. Compute our Lagrange kernel ONCE at the very beginning
-    // since we will always extrapolate from U_k to U_d
     let kernel = compute_kernel(k);
-
-    // Initialize our working hypercube with the input data (U_k^v)
     let mut current_cube = initial_evals.to_vec();
 
-    // 2. Main Loop: Loop over each dimension j from 1 to v
+    // Global retrieving of the coefficients to avoid repeated deferencement
+    let kernel_inf = kernel[0];
+    let kernel_classical = &kernel[1..];
+
     for j in 1..=num_vars {
-        // Dynamic size of coordinates to the left(already size d) and to the right (still size k)
-        // left_variants := #U_d^(j-1) = (d+1)^(j-1)
-        // right_variants := #U_k^(v-j) = (k+1)^(v-j)
         let left_variants = size_d.pow((j - 1) as u32);
         let right_variants = size_k.pow((num_vars - j) as u32);
 
-        // Allocate the exact size needed for the temporary buffer at step j
-        // The j-th dimension grows from (k+1) elements (U_k) to (d+1) elements (U_d)
-        let next_cube_size = left_variants * size_d * right_variants; // #U_d^(j-1) * (d+1) * #U_k^(v-j)
+        let next_cube_size = left_variants * size_d * right_variants;
         let mut next_cube = vec![Fr::ZERO; next_cube_size];
 
-        // The stride is the memory distance between two elements along the j-th axis
-        // BLACK-BOXED
         let current_axis_stride = right_variants;
         let next_axis_stride = right_variants;
 
-        // Iterate over all slices orthogonal to dimension j (xl, xr)
+        // UNIQUE WORK BUFFER BY AXIS (prevent millions of Vec allocations)
+        let mut working_row = vec![Fr::ZERO; size_d];
+
         for xl in 0..left_variants {
             for xr in 0..right_variants {
-                // Calculate 1D flattened memory offsets
-                // BLACK-BOXED
                 let current_line_offset = xl * size_k * right_variants + xr;
                 let next_line_offset = xl * size_d * right_variants + xr;
 
-                // Extraction: Get the univariate line of size (k+1) along axis j
-                let mut univariate_slice = Vec::with_capacity(size_d);
+                // 1. Direct copy from current_cube to our static buffer
                 for idx in 0..size_k {
                     let memory_index = current_line_offset + idx * current_axis_stride;
-                    univariate_slice.push(current_cube[memory_index]);
+                    working_row[idx] = current_cube[memory_index];
                 }
 
-                // Core execution: Extrapolate this line to size (d+1) using our adaptive window
-                univariate_extrapolate(&mut univariate_slice, &kernel, k, num_extrap);
+                // 2. Inlined, ultra-fast equivalent of univariate_extrapolate
+                let inf_term = working_row[0] * kernel_inf;
+                
+                for c in 0..num_extrap {
+                    let mut next_val = inf_term;
+                    let start_idx = 1 + c;
+                    let end_idx = start_idx + k;
 
-                // Injection: Write the expanded line back into the temporary next layout
+                    // Direct call on our memory pre-allocated buffer
+                    adaptive_dot_product_accumulate(
+                        &mut next_val,
+                        &working_row[start_idx..end_idx],
+                        kernel_classical,
+                    );
+
+                    working_row[size_k + c] = next_val;
+                }
+
+                // 3. Direct injection from our static buffer into next_cube
                 for idx in 0..size_d {
                     let memory_index = next_line_offset + idx * next_axis_stride;
-                    next_cube[memory_index] = univariate_slice[idx];
+                    next_cube[memory_index] = working_row[idx];
                 }
             }
         }
-
-        // The updated layout configuration becomes the reference for the next dimension
         current_cube = next_cube;
     }
 
-    // After v rounds, current_cube matches U_d^v and has size (d+1)^v
     current_cube
 }
 
@@ -292,46 +261,6 @@ pub fn multi_product_eval(polynomials: &[Vec<Fr>], d: usize, v: usize) -> Vec<Fr
     g
 }
 
-/// Linearly interpolates a set of d+1 evaluations over U_d at a specific challenge point `challenge`.
-/// Expected input layout structure: [p(inf), p(0), p(1), ..., p(d-1)]
-pub fn interpolate_at_point(evals: &[Fr], challenge: Fr) -> Fr {
-    let d = evals.len() - 1;
-    let mut classical_points = Vec::with_capacity(d);
-    for val in 0..d {
-        classical_points.push(Fr::from(val as u64));
-    }
-
-    // 1. Classical Lagrange interpolation over the d finite points (0 to d-1)
-    let mut lagrange_sum = Fr::ZERO;
-    for i in 0..d {
-        let mut numerator = Fr::ONE;
-        let mut denominator = Fr::ONE;
-        let x_i = classical_points[i];
-
-        for j in 0..d {
-            if i != j {
-                let x_j = classical_points[j];
-                numerator *= challenge - x_j;
-                denominator *= x_i - x_j;
-            }
-        }
-        let l_i = numerator * denominator.inverse().unwrap_or(Fr::ZERO);
-        lagrange_sum += evals[i + 1] * l_i; // evals[i+1] corresponds to evaluation of the poly at point 'i'
-    }
-
-    // 2. Vanishing polynomial product: \prod (r_i - x_k)
-    let mut vanishing_prod = Fr::ONE;
-    for x_i in &classical_points {
-        vanishing_prod *= challenge - x_i;
-    }
-
-    // 3. Extract the leading coefficient (evaluation at infinity at index 0)
-    let leading_coeff = evals[0];
-
-    // Combine using Lemma 2 formula
-    (leading_coeff * vanishing_prod) + lagrange_sum
-}
-
 /// Sequential bookkeeping reduction. Takes a flat subcube chunk of size 2^w_1 and
 /// iteratively folds it down to a single point by applying the window's challenges (r1, ..., r_w1).
 pub fn fold_hypercube_chunk(chunk: &[Fr], challenges: &[Fr]) -> Fr {
@@ -423,3 +352,81 @@ pub fn dynamic_folding_step<F: Field>(
 
     next_q
 }
+
+/* 
+/// Extrapolates a vector of evaluations using an ultra-optimized sliding window approach.
+/// - `evals_`:  initially contains e_k (size k+1): [p(inf), p(0), p(1), ..., p(k-1)]
+/// - `kernel`: precomputed kernel slice of size k+1, containing [C_inf, C_0, ..., C_{k-1}]
+/// - `k`: Base size of the window
+/// - `num_extrap`: number of additional points to calculate (e.g., 4 to grow from e_4 to e_8)
+pub fn univariate_extrapolate(evals: &mut Vec<Fr>, kernel: &[Fr], k: usize, num_extrap: usize) {
+    evals.reserve(num_extrap);
+
+    let kernel_inf = kernel[0];
+    let kernel_classical = &kernel[1..];
+
+    let p_inf = evals[0];
+    let inf_term = p_inf * kernel_inf;
+
+    for c in 0..num_extrap {
+        // Target initialized with the infinity term
+        let mut next_val = inf_term;
+
+        // Extract the sub-slice of Fr elements currently inside our shifting window
+        // &evals[start_idx..end_idx] := p(c), ..., p(c+k-1)
+        let start_idx = 1 + c;
+        let end_idx = start_idx + k;
+
+        // next_val += dot_product(evals[strat_idx..end_idx], kernel_classical)
+        adaptive_dot_product_accumulate(
+            &mut next_val,
+            &evals[start_idx..end_idx],
+            kernel_classical,
+        );
+
+        evals.push(next_val);
+    }
+}
+*/
+
+/* 
+/// Linearly interpolates a set of d+1 evaluations over U_d at a specific challenge point `challenge`.
+/// Expected input layout structure: [p(inf), p(0), p(1), ..., p(d-1)]
+pub fn interpolate_at_point(evals: &[Fr], challenge: Fr) -> Fr {
+    let d = evals.len() - 1;
+    let mut classical_points = Vec::with_capacity(d);
+    for val in 0..d {
+        classical_points.push(Fr::from(val as u64));
+    }
+
+    // 1. Classical Lagrange interpolation over the d finite points (0 to d-1)
+    let mut lagrange_sum = Fr::ZERO;
+    for i in 0..d {
+        let mut numerator = Fr::ONE;
+        let mut denominator = Fr::ONE;
+        let x_i = classical_points[i];
+
+        for j in 0..d {
+            if i != j {
+                let x_j = classical_points[j];
+                numerator *= challenge - x_j;
+                denominator *= x_i - x_j;
+            }
+        }
+        let l_i = numerator * denominator.inverse().unwrap_or(Fr::ZERO);
+        lagrange_sum += evals[i + 1] * l_i; // evals[i+1] corresponds to evaluation of the poly at point 'i'
+    }
+
+    // 2. Vanishing polynomial product: \prod (r_i - x_k)
+    let mut vanishing_prod = Fr::ONE;
+    for x_i in &classical_points {
+        vanishing_prod *= challenge - x_i;
+    }
+
+    // 3. Extract the leading coefficient (evaluation at infinity at index 0)
+    let leading_coeff = evals[0];
+
+    // Combine using Lemma 2 formula
+    (leading_coeff * vanishing_prod) + lagrange_sum
+}
+*/

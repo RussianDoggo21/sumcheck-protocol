@@ -5,19 +5,12 @@ use ark_test_curves::bls12_381::Fr;
 
 // Polynomial types
 use ark_poly::DenseMultilinearExtension;
-use ark_poly::polynomial::multivariate::{SparsePolynomial, SparseTerm, Term};
-use ark_poly::univariate::DensePolynomial;
-use ark_poly::{DenseMVPolynomial, DenseUVPolynomial, Polynomial};
 
-use ark_ff::{Field, UniformRand};
+use ark_ff::{UniformRand, Field};
 use ark_linear_sumcheck::ml_sumcheck::data_structures::ListOfProductsOfPolynomials;
 use ark_std::rand::Rng;
 use ark_std::rc::Rc;
 
-use itertools::Itertools;
-
-// For debugging
-use std::fmt::Write;
 
 // =================================================================================================
 // 1. MULTIVARIATE / PRODUCT OF POLYNOMIALS SETUP (NEW)
@@ -65,7 +58,7 @@ pub fn generate_multivariate_poly_test<R: Rng>(
     let mut list_of_products = ListOfProductsOfPolynomials::new(num_vars);
 
     // Add the full product p_1 * p_2 * ... * p_d with a generic multiplier coefficient of 1
-    list_of_products.add_product(poly_rc_vec, Fr::from(1u64));
+    list_of_products.add_product(poly_rc_vec, Fr::ONE);
 
     (list_of_poly, list_of_products)
 }

@@ -1,5 +1,4 @@
 use ark_ff::Field;
-use ark_poly::{DenseMultilinearExtension, MultilinearExtension};
 use ark_test_curves::bls12_381::Fr;
 
 use crate::improved::arithmetic::adaptive_dot_product_accumulate;

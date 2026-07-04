@@ -1,4 +1,4 @@
-use ark_ff::{BigInteger, BigInteger256, BigInteger384, Field, MontConfig, PrimeField};
+use ark_ff::{BigInteger256, BigInteger384, Field, MontConfig, PrimeField};
 use ark_test_curves::bls12_381::{Fr, FrConfig};
 
 // Preliminary work
@@ -8,41 +8,6 @@ lazy_static::lazy_static! {
         let r2_bigint = <FrConfig as MontConfig<4>>::R2;
         Fr::new_unchecked(r2_bigint)
     };
-}
-
-/// Computes the raw integer product Ti = small * big (WITHOUT reduction)
-/// Returns a BigInteger384 (6 limbs) to avoid overflows
-pub fn small_big_mul_raw(small: u64, big: &Fr) -> BigInteger384 {
-    // Originally big is in the Montgomery Form
-    // big = big' * R mod q, with big' being the actual field element value
-    // and R = 2^256 (the Montgomery constant for a 256-bit field).
-    // e.g. big' = 12*2^0 + 3*2^64 + 5*2^128 + 7*2^292
-
-    // big_repr returns an object BigInt which represents the raw internal limbs
-    // of the Montgomery representation, encoded as a 256-bit integer.
-    // e.g. big.into_bigint() = BigInt([12, 3, 5, 7])
-    let mut big_repr = big.into_bigint();
-
-    // as_mut extracts a mutable reference to the underlying u64 array of big_repr
-    // e.g. big_repr.as_mut() = &mut [12, 3, 5, 7]
-    let limbs = big_repr.as_mut();
-
-    let mut res_limbs = [0u64; 6]; // Definition of the limbs to be store the result of each multiplication
-    let mut carry: u128 = 0; // Carry of each multiplication
-    let small_u128 = small as u128; // Conversion for the multiplication between 2 numbers u128
-
-    // We commpute N native multiplications between each limb and the small integer
-    // In our case N = 4
-    for i in 0..limbs.len() {
-        let product_u128: u128 = (limbs[i] as u128) * small_u128 + carry; // Computation of said product (avoid overflow by storing the result on 128 bits)
-        res_limbs[i] = product_u128 as u64; // Storage of the product (first 64 bits of product_u128)
-        carry = product_u128 >> 64; // Carry to add for the next product (last 64 bits of product_u128)
-    }
-    // Store the remaining carry in the 5th limb
-    // Most of the time, carry will be equal to 0
-    res_limbs[4] = carry as u64;
-
-    BigInteger384::new(res_limbs)
 }
 
 /// Computes a fast dot product between a window of Fr elements (which might contain small integers)
@@ -116,7 +81,44 @@ pub fn adaptive_dot_product_accumulate(
     *accumulator += fast_path_sum + slow_path_sum;
 }
 
-/*
+
+
+/* 
+/// Computes the raw integer product Ti = small * big (WITHOUT reduction)
+/// Returns a BigInteger384 (6 limbs) to avoid overflows
+pub fn small_big_mul_raw(small: u64, big: &Fr) -> BigInteger384 {
+    // Originally big is in the Montgomery Form
+    // big = big' * R mod q, with big' being the actual field element value
+    // and R = 2^256 (the Montgomery constant for a 256-bit field).
+    // e.g. big' = 12*2^0 + 3*2^64 + 5*2^128 + 7*2^292
+
+    // big_repr returns an object BigInt which represents the raw internal limbs
+    // of the Montgomery representation, encoded as a 256-bit integer.
+    // e.g. big.into_bigint() = BigInt([12, 3, 5, 7])
+    let mut big_repr = big.into_bigint();
+
+    // as_mut extracts a mutable reference to the underlying u64 array of big_repr
+    // e.g. big_repr.as_mut() = &mut [12, 3, 5, 7]
+    let limbs = big_repr.as_mut();
+
+    let mut res_limbs = [0u64; 6]; // Definition of the limbs to be store the result of each multiplication
+    let mut carry: u128 = 0; // Carry of each multiplication
+    let small_u128 = small as u128; // Conversion for the multiplication between 2 numbers u128
+
+    // We commpute N native multiplications between each limb and the small integer
+    // In our case N = 4
+    for i in 0..limbs.len() {
+        let product_u128: u128 = (limbs[i] as u128) * small_u128 + carry; // Computation of said product (avoid overflow by storing the result on 128 bits)
+        res_limbs[i] = product_u128 as u64; // Storage of the product (first 64 bits of product_u128)
+        carry = product_u128 >> 64; // Carry to add for the next product (last 64 bits of product_u128)
+    }
+    // Store the remaining carry in the 5th limb
+    // Most of the time, carry will be equal to 0
+    res_limbs[4] = carry as u64;
+
+    BigInteger384::new(res_limbs)
+}
+
 /// Quick dot product combining delayed reduction and small-big multiplication
 /// Usage of a montgomery reduction  rather than a Barrett reduction
 pub fn fast_dot_product_strided(small_values: &[u64], coefficients: &[Fr], offset : usize, stride : usize) -> Fr {

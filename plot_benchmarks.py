@@ -14,18 +14,18 @@ for d in degrees:
     df = pd.read_csv(csv_filename)
     
     # ==============================================================================
-    # GRAPH 1 : PERFORMANCE CURVES
+    # GRAPH 1 : PERFORMANCE CURVES (Offline / Online Architecture)
     # ==============================================================================
     plt.figure(figsize=(11, 7))
     
-    # Courbes principales (Traits pleins)
+    # Main curves (Solid lines)
     plt.plot(df['Variables'], df['Arkworks_ms'], 's-', color='orange', label='Arkworks framework (ms)', linewidth=2)
     plt.plot(df['Variables'], df['LinearTimeSC_ms'], '^-', color='teal', label='LinearTime_SC (ms)', linewidth=2)
     plt.plot(df['Variables'], df['EvalProductSV_ms'], 'o-', color='crimson', label='EvalProductSV (ms) - Total', linewidth=2.5)
     
-    # Courbes des sous-phases (Traits pointillés)
-    plt.plot(df['Variables'], df['EvalProductSV_Precomp_ms'], 'x--', color='purple', label='EvalProductSV - Precomputation (ms)', linewidth=1.5, alpha=0.8)
-    plt.plot(df['Variables'], df['EvalProductSV_Final_ms'], 'v--', color='coral', label='EvalProductSV - Final Phase (ms)', linewidth=1.5, alpha=0.8)
+    # Sub-phase curves (Dashed lines)
+    plt.plot(df['Variables'], df['EvalProductSV_Offline_ms'], 'x--', color='purple', label='EvalProductSV - Offline (Precomp) (ms)', linewidth=1.5, alpha=0.8)
+    plt.plot(df['Variables'], df['EvalProductSV_Online_ms'], 'v--', color='coral', label='EvalProductSV - Online Phase (ms)', linewidth=1.5, alpha=0.8)
 
     plt.yscale('log')
     plt.xlabel('Number of variables ($\ell$)', fontsize=12, fontweight='bold', labelpad=10)
@@ -38,4 +38,4 @@ for d in degrees:
     curve_img = f'sumcheck_benchmark_curve_d{d}.png'
     plt.savefig(curve_img, dpi=300)
     plt.close()
-    print(f"Generated curve plot with sub-phases: {curve_img}")
+    print(f"Generated curve plot with offline/online phases: {curve_img}")

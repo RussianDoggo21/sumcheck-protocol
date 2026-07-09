@@ -1,6 +1,11 @@
 use ark_ff::{BigInteger256, BigInteger384, Field, MontConfig, PrimeField};
 use ark_test_curves::bls12_381::{Fr, FrConfig};
 
+use std::sync::atomic::{AtomicU64, Ordering};
+
+pub static FAST_PATH_COUNT: AtomicU64 = AtomicU64::new(0);
+pub static SLOW_PATH_COUNT: AtomicU64 = AtomicU64::new(0);
+
 // Preliminary work
 // Heavy computation of the constant 2^256, once and for all
 lazy_static::lazy_static! {
@@ -36,6 +41,7 @@ pub fn adaptive_dot_product_accumulate(
 
         // Levier 2 & 3 : Fusion de la vérification et de la multiplication/accumulation
         if bigint.0[1] == 0 && bigint.0[2] == 0 && bigint.0[3] == 0 {
+            FAST_PATH_COUNT.fetch_add(1, Ordering::Relaxed);
             let small = bigint.0[0];
             if small == 0 {
                 continue;
@@ -63,6 +69,7 @@ pub fn adaptive_dot_product_accumulate(
             }
         } else {
             // SLOW-PATH
+            SLOW_PATH_COUNT.fetch_add(1, Ordering::Relaxed);
             slow_path_sum += window_evals[i] * coefficients[i];
         }
     }

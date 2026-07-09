@@ -8,44 +8,52 @@ use ark_linear_sumcheck::ml_sumcheck::MLSumcheck;
 use ark_poly::MultilinearExtension;
 use ark_test_curves::bls12_381::Fr;
 
+use std::fs::OpenOptions;
 use std::fs::File;
 use std::io::{Write, stdout};
 use std::time::{Duration, Instant};
 
 use crate::improved::protocol::{EvalProductSV, LinearTimeSC, SumcheckProtocol};
 use crate::improved::streaming::MockStream;
-use crate::utils::generate_multivariate_poly_test;
+use crate::utils::{generate_multivariate_poly_test, generate_small_value_poly_test, run_multiplication_ratio_benchmark};
 
 fn main() {
-    let max_vars = 14; 
-    let num_runs = 5;
-    let degrees_to_test = [3, 6, 9]; // Added target degrees to match your python script
+    // Run the micro-benchmark from Sanity Check 1
+    run_multiplication_ratio_benchmark();
 
+    let max_vars = 14; 
+    let num_runs = 3; // 3 runs to get stable averages quickly
+    let degrees_to_test = [2, 3, 4, 6, 8]; // Extended range of degrees for a smooth 3D surface
+    
     println!("==================================================");
     println!("       STARTING SUMCHECK PROTOCOL BENCHMARK        ");
     println!("==================================================");
+
+    // Initialize the global 3D benchmark file
+    let global_filename = "csv/benchmark_3d_data.csv";
+    let mut file = File::create(global_filename).expect("Unable to create global file");
+    writeln!(
+        file,
+        "Variables,Degree,Arkworks_ms,LinearTimeSC_ms,EvalProductSV_Total_ms,EvalProductSV_Offline_ms,EvalProductSV_Online_ms"
+    ).unwrap();
+    drop(file); // Close to avoid borrow issues, append mode will be used later
 
     for &d in &degrees_to_test {
         println!("\n##################################################");
         println!("  LAUNCHING BENCHMARK SERIES FOR DEGREE d = {}", d);
         println!("##################################################");
-        test_range_variables(max_vars, d, num_runs);
+        test_range_variables_3d(max_vars, d, num_runs, global_filename);
     }
 
     println!("\n[GLOBAL OK] All benchmarks completed successfully!");
 }
 
-pub fn test_range_variables(max_vars: usize, d: usize, num_runs: u32) {
-    let filename = format!("benchmark_results_d{}.csv", d);
-    let mut file = File::create(&filename).expect("Unable to create file");
-
-    // Header updated to match the Offline/Online approach
-    writeln!(
-        file,
-        "Variables,Arkworks_ms,LinearTimeSC_ms,EvalProductSV_ms,EvalProductSV_Offline_ms,EvalProductSV_Online_ms"
-    )
-    .unwrap();
-    file.flush().unwrap();
+pub fn test_range_variables_3d(max_vars: usize, d: usize, num_runs: u32, out_filename: &str) {
+    let mut file = OpenOptions::new()
+        .write(true)
+        .append(true)
+        .open(out_filename)
+        .expect("Unable to open data file in append mode");
 
     for num_v in 4..=max_vars {
         println!("\n==================================================");
@@ -87,27 +95,28 @@ pub fn test_range_variables(max_vars: usize, d: usize, num_runs: u32) {
         let duration_sv_online_ms = avg_sv_online.as_secs_f64() * 1000.0;
         let duration_sv_total_ms = avg_sv_total.as_secs_f64() * 1000.0;
 
-        // Save all measured data
+        // Save structured entry for 3D engine plotting [X=Variables, Y=Degree, Z=Times...]
         writeln!(
             file,
-            "{},{},{},{},{},{}",
-            num_v, duration_ark_ms, duration_opt_ms, duration_sv_total_ms, duration_sv_offline_ms, duration_sv_online_ms
+            "{},{},{:.4},{:.4},{:.4},{:.4},{:.4}",
+            num_v, d, duration_ark_ms, duration_opt_ms, duration_sv_total_ms, duration_sv_offline_ms, duration_sv_online_ms
         )
         .unwrap();
         file.flush().unwrap();
-
-        println!("\n -> Average Arkworks     : {:.4} ms", duration_ark_ms);
-        println!(" -> Average LinearTimeSC  : {:.4} ms", duration_opt_ms);
-        println!(" -> Average EvalProductSV : {:.4} ms (Total)", duration_sv_total_ms);
-        println!("       |-- Offline (Precomp): {:.4} ms", duration_sv_offline_ms);
-        println!("       |-- Online Phase     : {:.4} ms", duration_sv_online_ms);
     }
-    println!("\n[OK] Series complete! Results saved in '{}'.", filename);
 }
 
 fn multivariate_test(num_vars: usize, d: usize) -> (Duration, Duration, Duration, Duration) {
     let mut rng = rand::thread_rng();
-    let (list_of_poly, list_of_products) = generate_multivariate_poly_test(&mut rng, num_vars, d);
+    
+    // --- SETUP SELECTOR FOR SANITY CHECK 0 ---
+    // Standard setup with full-size random field elements (Fast-path rate will be 0.00%):
+    // let (list_of_poly, list_of_products) = generate_multivariate_poly_test(&mut rng, num_vars, d);
+    
+    // Optimized small-value setting setup (Triggers the custom fast-path branches):
+    let (list_of_poly, list_of_products) = generate_small_value_poly_test(&mut rng, num_vars, d);
+    //let (list_of_poly, list_of_products) = generate_multivariate_poly_test(&mut rng, num_vars, d);
+    // -----------------------------------------
 
     let hypercube_size = 1 << num_vars;
     let mut expected_sum = Fr::ZERO;
@@ -149,6 +158,11 @@ fn multivariate_test(num_vars: usize, d: usize) -> (Duration, Duration, Duration
     let verifier_accepted_sv = eval_product_sv_protocol.online_phase(&mut stream_sv, expected_sum, offline_data);
     let duration_sv_online = start_online.elapsed();
     assert!(verifier_accepted_sv);
+
+    // --- SANITY CHECK 0 INTEGRATION ---
+    // Print stats and automatically reset counters for the next variable iteration
+    println!("\n[STATS] Evaluation results for num_vars = {} and degree d = {}:", num_vars, d);
+    crate::utils::print_and_reset_arithmetic_counters(); 
 
     (duration_arkworks, duration_improved, duration_sv_offline, duration_sv_online)
 }

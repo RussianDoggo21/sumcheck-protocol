@@ -1,15 +1,18 @@
 // Auxiliary functions
 
-// Finite field F
 use ark_test_curves::bls12_381::Fr;
-
-// Polynomial types
 use ark_poly::DenseMultilinearExtension;
-
 use ark_ff::{UniformRand, Field};
 use ark_linear_sumcheck::ml_sumcheck::data_structures::ListOfProductsOfPolynomials;
 use ark_std::rand::Rng;
 use ark_std::rc::Rc;
+use std::fs::File;
+
+use std::time::Instant;
+use std::sync::atomic::Ordering;
+use std::io::Write;
+
+use crate::improved::arithmetic::{FAST_PATH_COUNT, SLOW_PATH_COUNT, adaptive_dot_product_accumulate}; // Adjust path according to your project structure
 
 
 // =================================================================================================
@@ -61,6 +64,97 @@ pub fn generate_multivariate_poly_test<R: Rng>(
     list_of_products.add_product(poly_rc_vec, Fr::ONE);
 
     (list_of_poly, list_of_products)
+}
+
+/// Generates a list of d independent dense multilinear extensions whose evaluations
+/// on the boolean hypercube are forced to be small integers (Small-Value Setting),
+/// along with the Arkworks ListOfProductsOfPolynomials structure required for benchmarking.
+pub fn generate_small_value_poly_test<R: Rng>(
+    rng: &mut R,
+    num_vars: usize,
+    d: usize,
+) -> (
+    Vec<DenseMultilinearExtension<Fr>>,
+    ListOfProductsOfPolynomials<Fr>,
+) {
+    let hypercube_size = 1 << num_vars;
+    let mut list_of_poly = Vec::with_capacity(d);
+    let mut poly_rc_vec = Vec::with_capacity(d);
+
+    for _ in 0..d {
+        let mut evaluations = Vec::with_capacity(hypercube_size);
+        for _ in 0..hypercube_size {
+            // Force initial evaluations to be small integers (e.g., between 0 and 5)
+            // to prevent successive recursive additions/multiplications from overflowing u64
+            let small_int = rng.gen_range(0..6) as u64;
+            evaluations.push(Fr::from(small_int));
+        }
+
+        let poly = DenseMultilinearExtension::from_evaluations_vec(num_vars, evaluations);
+        list_of_poly.push(poly.clone());
+        poly_rc_vec.push(Rc::new(poly));
+    }
+
+    let mut list_of_products = ListOfProductsOfPolynomials::new(num_vars);
+    list_of_products.add_product(poly_rc_vec, Fr::ONE);
+
+    (list_of_poly, list_of_products)
+}
+
+
+
+/// Prints the current state of the adaptive arithmetic counters and resets them to zero.
+/// Used for Sanity Check 0 to verify if the fast-path (Small-Big) is triggered.
+pub fn print_and_reset_arithmetic_counters() {
+    let fast = FAST_PATH_COUNT.swap(0, Ordering::Relaxed);
+    let slow = SLOW_PATH_COUNT.swap(0, Ordering::Relaxed);
+    let total = fast + slow;
+
+    println!("--------------------------------------------------");
+    println!("       SANITY CHECK 0: ARITHMETIC COUNTERS        ");
+    println!("--------------------------------------------------");
+    println!(" -> Fast-Path Calls (Small-Big Mul): {}", fast);
+    println!(" -> Slow-Path Calls (Big-Big Mul)  : {}", slow);
+    if total > 0 {
+        let ratio = (fast as f64 / total as f64) * 100.0;
+        println!(" -> Fast-Path Utilization Rate     : {:.2}%", ratio);
+    } else {
+        println!(" -> Fast-Path Utilization Rate     : 0.00% (No operations executed)");
+    }
+    println!("--------------------------------------------------");
+}
+
+/// Sanity Check 1: Measures the performance ratio between standard Big-Big multiplication 
+/// and our custom optimized Small-Big multiplication.te
+/// by forcing 100% Fast-Path vs 100% Slow-Path via controlled slice contents.
+pub fn run_multiplication_ratio_benchmark() {
+    let mut rng = ark_std::test_rng();
+    let size = 1_000_000;
+
+    let big_elements: Vec<Fr> = (0..size).map(|_| Fr::rand(&mut rng)).collect();
+    let small_elements: Vec<Fr> = (0..size).map(|i| Fr::from((i % 5 + 1) as u64)).collect();
+    let coefficients: Vec<Fr> = (0..size).map(|_| Fr::rand(&mut rng)).collect();
+
+    // 1. Slow-Path
+    let mut accumulator_slow = Fr::ZERO;
+    let start_slow = Instant::now();
+    adaptive_dot_product_accumulate(&mut accumulator_slow, &big_elements, &coefficients);
+    let duration_slow = start_slow.elapsed();
+
+    // 2. Fast-Path
+    let mut accumulator_fast = Fr::ZERO;
+    let start_fast = Instant::now();
+    adaptive_dot_product_accumulate(&mut accumulator_fast, &small_elements, &coefficients);
+    let duration_fast = start_fast.elapsed();
+
+    let slow_ms = duration_slow.as_secs_f64() * 1000.0;
+    let fast_ms = duration_fast.as_secs_f64() * 1000.0;
+
+    // Save to a dedicated CSV file for Python
+    let mut file = File::create("csv/multiplication_ratio.csv").expect("Unable to create ratio file");
+    writeln!(file, "Operation,Time_ms").unwrap();
+    writeln!(file, "Standard Big-Big (Slow-Path),{:.4}", slow_ms).unwrap();
+    writeln!(file, "Optimized Small-Big (Fast-Path),{:.4}", fast_ms).unwrap();
 }
 
 

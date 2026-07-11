@@ -22,7 +22,7 @@ fn main() {
     run_multiplication_ratio_benchmark();
 
     let max_vars = 14; 
-    let num_runs = 3; // 3 runs to get stable averages quickly
+    let num_runs = 3;
     let degrees_to_test = [2, 3, 4, 6, 8]; // Extended range of degrees for a smooth 3D surface
     
     println!("==================================================");
@@ -34,7 +34,7 @@ fn main() {
     let mut file = File::create(global_filename).expect("Unable to create global file");
     writeln!(
         file,
-        "Variables,Degree,Arkworks_ms,LinearTimeSC_ms,EvalProductSV_Total_ms,EvalProductSV_Offline_ms,EvalProductSV_Online_ms"
+        "Variables,Degree,Arkworks_ms,LinearTime_Vanilla_ms,LinearTime_SB1_ms,EvalProductSV_Total_ms,EvalProductSV_Offline_ms,EvalProductSV_Online_ms"
     ).unwrap();
     drop(file); // Close to avoid borrow issues, append mode will be used later
 
@@ -65,7 +65,8 @@ pub fn test_range_variables_3d(max_vars: usize, d: usize, num_runs: u32, out_fil
         println!("==================================================");
 
         let mut total_ark = Duration::ZERO;
-        let mut total_opt = Duration::ZERO;
+        let mut total_vanilla = Duration::ZERO;
+        let mut total_sb1 = Duration::ZERO;
         let mut total_sv_offline = Duration::ZERO;
         let mut total_sv_online = Duration::ZERO;
 
@@ -73,10 +74,11 @@ pub fn test_range_variables_3d(max_vars: usize, d: usize, num_runs: u32, out_fil
             print!("   Run {}/{}... ", run, num_runs);
             stdout().flush().unwrap();
 
-            let (d_ark, d_opt, d_sv_offline, d_sv_online) = multivariate_test(num_v, d);
+            let (d_ark, d_vanilla, d_sb1, d_sv_offline, d_sv_online) = multivariate_test(num_v, d);
 
             total_ark += d_ark;
-            total_opt += d_opt;
+            total_vanilla += d_vanilla;
+            total_sb1 += d_sb1;
             total_sv_offline += d_sv_offline;
             total_sv_online += d_sv_online;
 
@@ -84,13 +86,15 @@ pub fn test_range_variables_3d(max_vars: usize, d: usize, num_runs: u32, out_fil
         }
 
         let avg_ark = total_ark / num_runs;
-        let avg_opt = total_opt / num_runs;
+        let avg_vanilla = total_vanilla / num_runs;
+        let avg_sb1 = total_sb1 / num_runs;
         let avg_sv_offline = total_sv_offline / num_runs;
         let avg_sv_online = total_sv_online / num_runs;
         let avg_sv_total = avg_sv_offline + avg_sv_online;
 
         let duration_ark_ms = avg_ark.as_secs_f64() * 1000.0;
-        let duration_opt_ms = avg_opt.as_secs_f64() * 1000.0;
+        let duration_vanilla_ms = avg_vanilla.as_secs_f64() * 1000.0;
+        let duration_sb1_ms = avg_sb1.as_secs_f64() * 1000.0;
         let duration_sv_offline_ms = avg_sv_offline.as_secs_f64() * 1000.0;
         let duration_sv_online_ms = avg_sv_online.as_secs_f64() * 1000.0;
         let duration_sv_total_ms = avg_sv_total.as_secs_f64() * 1000.0;
@@ -98,15 +102,15 @@ pub fn test_range_variables_3d(max_vars: usize, d: usize, num_runs: u32, out_fil
         // Save structured entry for 3D engine plotting [X=Variables, Y=Degree, Z=Times...]
         writeln!(
             file,
-            "{},{},{:.4},{:.4},{:.4},{:.4},{:.4}",
-            num_v, d, duration_ark_ms, duration_opt_ms, duration_sv_total_ms, duration_sv_offline_ms, duration_sv_online_ms
+            "{},{},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4}",
+            num_v, d, duration_ark_ms, duration_vanilla_ms, duration_sb1_ms, duration_sv_total_ms, duration_sv_offline_ms, duration_sv_online_ms
         )
         .unwrap();
         file.flush().unwrap();
     }
 }
 
-fn multivariate_test(num_vars: usize, d: usize) -> (Duration, Duration, Duration, Duration) {
+fn multivariate_test(num_vars: usize, d: usize) -> (Duration, Duration, Duration, Duration, Duration) {
     let mut rng = rand::thread_rng();
     
     // --- SETUP SELECTOR FOR SANITY CHECK 0 ---
@@ -135,15 +139,21 @@ fn multivariate_test(num_vars: usize, d: usize) -> (Duration, Duration, Duration
     let ark_sum = MLSumcheck::extract_sum(&proof);
     assert_eq!(expected_sum, ark_sum, "Local hypercube sum mismatch!");
 
-    let linear_time_protocol = LinearTimeSC;
+    let linear_time_protocol_vanilla = LinearTimeSC;
     let l = list_of_poly[0].num_vars();
     let d_len = list_of_poly.len();
     let mut stream_opt = MockStream::new(l, d_len, &list_of_poly);
 
-    let start_improved = Instant::now();
-    let verifier_accepted_opt = linear_time_protocol.run(&mut stream_opt, expected_sum);
-    let duration_improved = start_improved.elapsed();
-    assert!(verifier_accepted_opt);
+    let start_vanilla = Instant::now();
+    let verifier_accepted_vanilla = linear_time_protocol_vanilla.run(&mut stream_opt, expected_sum);
+    let duration_vanilla = start_vanilla.elapsed();
+    assert!(verifier_accepted_vanilla);
+
+    let linear_time_protocol_sb1 = LinearTimeSC;
+    let start_sb1 = Instant::now();
+    let verifier_accepted_sb1 = linear_time_protocol_sb1.run_sb_1(&mut stream_opt, expected_sum);
+    let duration_sb1 = start_sb1.elapsed();
+    assert!(verifier_accepted_sb1);
 
     let eval_product_sv_protocol = EvalProductSV::new(d_len, l);
     let mut stream_sv = MockStream::new(l, d_len, &list_of_poly);
@@ -164,5 +174,5 @@ fn multivariate_test(num_vars: usize, d: usize) -> (Duration, Duration, Duration
     println!("\n[STATS] Evaluation results for num_vars = {} and degree d = {}:", num_vars, d);
     crate::utils::print_and_reset_arithmetic_counters(); 
 
-    (duration_arkworks, duration_improved, duration_sv_offline, duration_sv_online)
+    (duration_arkworks, duration_vanilla, duration_sb1, duration_sv_offline, duration_sv_online)
 }

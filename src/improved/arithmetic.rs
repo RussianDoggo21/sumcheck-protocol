@@ -90,42 +90,51 @@ pub fn adaptive_dot_product_accumulate(
 
 
 
-/* 
 /// Computes the raw integer product Ti = small * big (WITHOUT reduction)
-/// Returns a BigInteger384 (6 limbs) to avoid overflows
-pub fn small_big_mul_raw(small: u64, big: &Fr) -> BigInteger384 {
-    // Originally big is in the Montgomery Form
-    // big = big' * R mod q, with big' being the actual field element value
-    // and R = 2^256 (the Montgomery constant for a 256-bit field).
-    // e.g. big' = 12*2^0 + 3*2^64 + 5*2^128 + 7*2^292
+/// Returns a field element Fr directly using fast delayed reconstruction.
+pub fn small_big_mul_raw(small: u64, big: &Fr) -> Fr {
+    use ark_ff::{BigInteger256, PrimeField};
 
-    // big_repr returns an object BigInt which represents the raw internal limbs
-    // of the Montgomery representation, encoded as a 256-bit integer.
-    // e.g. big.into_bigint() = BigInt([12, 3, 5, 7])
     let mut big_repr = big.into_bigint();
-
-    // as_mut extracts a mutable reference to the underlying u64 array of big_repr
-    // e.g. big_repr.as_mut() = &mut [12, 3, 5, 7]
     let limbs = big_repr.as_mut();
 
-    let mut res_limbs = [0u64; 6]; // Definition of the limbs to be store the result of each multiplication
-    let mut carry: u128 = 0; // Carry of each multiplication
-    let small_u128 = small as u128; // Conversion for the multiplication between 2 numbers u128
+    let mut res_limbs = [0u64; 6];
+    let mut carry: u128 = 0;
+    let small_u128 = small as u128;
 
-    // We commpute N native multiplications between each limb and the small integer
-    // In our case N = 4
     for i in 0..limbs.len() {
-        let product_u128: u128 = (limbs[i] as u128) * small_u128 + carry; // Computation of said product (avoid overflow by storing the result on 128 bits)
-        res_limbs[i] = product_u128 as u64; // Storage of the product (first 64 bits of product_u128)
-        carry = product_u128 >> 64; // Carry to add for the next product (last 64 bits of product_u128)
+        let product_u128: u128 = (limbs[i] as u128) * small_u128 + carry;
+        res_limbs[i] = product_u128 as u64;
+        carry = product_u128 >> 64;
     }
-    // Store the remaining carry in the 5th limb
-    // Most of the time, carry will be equal to 0
     res_limbs[4] = carry as u64;
 
-    BigInteger384::new(res_limbs)
+    // 1. Extract the 4 lower limbs (first 256 bits of the unreduced result)
+    let mut low_limbs = [0u64; 4];
+    low_limbs.copy_from_slice(&res_limbs[0..4]);
+    
+    // Construct the baseline field element directly without instant Montgomery reduction
+    let mut final_fr = Fr::new(BigInteger256::new(low_limbs));
+
+    // 2. Handle the overflow remaining in the 5th and 6th limbs (limbs 4 and 5)
+    if res_limbs[4] > 0 || res_limbs[5] > 0 {
+        let overflow_limbs = BigInteger256::new([res_limbs[4], res_limbs[5], 0, 0]);
+        
+        // from_bigint applies full modular reduction if the overflow part exceeds the modulus q
+        let overflow_fr = Fr::from_bigint(overflow_limbs).unwrap_or(Fr::ZERO);
+        
+        // Retrieve the constant Montgomery correction factor R_256 (equivalent to 2^256)
+        let r2_bigint = <crate::improved::arithmetic::FrConfig as ark_ff::MontConfig<4>>::R2;
+        let r_256_constant = Fr::new_unchecked(r2_bigint);
+
+        // Add the scale-corrected overflow component back to the final result
+        final_fr += overflow_fr * r_256_constant;
+    }
+
+    final_fr
 }
 
+/*
 /// Quick dot product combining delayed reduction and small-big multiplication
 /// Usage of a montgomery reduction  rather than a Barrett reduction
 pub fn fast_dot_product_strided(small_values: &[u64], coefficients: &[Fr], offset : usize, stride : usize) -> Fr {

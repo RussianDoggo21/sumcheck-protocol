@@ -11,6 +11,7 @@ use ark_test_curves::bls12_381::Fr;
 
 pub trait SumcheckProtocol<F: PrimeField> {
     fn run(&self, stream: &mut dyn PolynomialStream<F>, sumcheck_claim: F) -> bool;
+    fn run_sb_1(&self, stream: &mut dyn PolynomialStream<F>, sumcheck_claim: F) -> bool;
 }
 
 pub struct LinearTimeSC;
@@ -31,6 +32,23 @@ impl SumcheckProtocol<Fr> for LinearTimeSC {
             .collect();
 
         Self::linear_time_sc(&list_of_poly, num_poly, sumcheck_claim)
+    }
+
+    fn run_sb_1(&self, stream: &mut dyn PolynomialStream<Fr>, sumcheck_claim: Fr) -> bool {
+        let num_vars = stream.num_vars();
+        let num_poly = stream.degree();
+        stream.rewind();
+
+        let full_chunk = stream
+            .next_chunk(1 << num_vars)
+            .expect("Stream should provide the full hypercube data");
+
+        let list_of_poly: Vec<DenseMultilinearExtension<Fr>> = full_chunk
+            .into_iter()
+            .map(|evals| DenseMultilinearExtension::from_evaluations_vec(num_vars, evals))
+            .collect();
+
+        Self::linear_time_sc_sb_1(&list_of_poly, num_poly, sumcheck_claim)
     }
 }
 
@@ -65,6 +83,58 @@ impl LinearTimeSC {
         let mut rng = rand::thread_rng();
 
         for i in 0..num_vars {
+            let s_i = prover.compute_s_i(num_vars, i);
+            verifier.add_s_i(s_i);
+
+            let s_i_0 = verifier.compute_s_i_0(c_i);
+            let challenge = verifier.send_challenge(&mut rng);
+
+            c_i = verifier.update_c_i(challenge, s_i_0);
+            prover.update_p_arrays(num_vars, i, challenge);
+        }
+
+        verifier.final_check(list_of_poly, c_i)
+    }
+
+    pub fn linear_time_sc_sb_1(
+        list_of_poly: &[DenseMultilinearExtension<Fr>],
+        num_poly: usize,
+        sumcheck_claim: Fr,
+    ) -> bool {
+        assert!(
+            list_of_poly.len() > 0,
+            "Cannot run sumcheck on an empty list of polynomials"
+        );
+
+        let num_vars = list_of_poly[0].num_vars;
+        for p in list_of_poly {
+            assert_eq!(
+                num_vars, p.num_vars,
+                "All polynomials must have the same number of variables"
+            );
+        }
+
+        assert_eq!(
+            list_of_poly.len(),
+            num_poly,
+            "Number of multilinear polynomials must equal {num_poly}"
+        );
+
+        let mut prover = Prover::new(list_of_poly);
+        let mut verifier = Verifier::new(num_poly);
+        let mut c_i = sumcheck_claim;
+        let mut rng = rand::thread_rng();
+
+        let s_0 = prover.compute_s_0_sb(num_vars);
+        verifier.add_s_i(s_0);
+
+        let s_0_0 = verifier.compute_s_i_0(c_i);
+        let challenge = verifier.send_challenge(&mut rng);
+
+        c_i = verifier.update_c_i(challenge, s_0_0);
+        prover.update_p_arrays(num_vars, 0, challenge);
+
+        for i in 1..num_vars {
             let s_i = prover.compute_s_i(num_vars, i);
             verifier.add_s_i(s_i);
 
@@ -244,5 +314,10 @@ impl SumcheckProtocol<Fr> for EvalProductSV {
         
         // Step 2: Handle Verification Loop and Interaction (Online)
         self.online_phase(stream, sumcheck_claim, offline_data)
+    }
+
+    // FAKE
+    fn run_sb_1(&self, stream: &mut dyn PolynomialStream<Fr>, sumcheck_claim: Fr) -> bool {
+        true
     }
 }

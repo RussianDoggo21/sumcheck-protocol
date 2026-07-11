@@ -1,5 +1,6 @@
 use crate::improved::engine::{EvaluationPoint, get_u_hat_domain};
-use ark_ff::Field;
+use crate::improved::arithmetic::small_big_mul_raw;
+use ark_ff::{PrimeField,Field};
 use ark_poly::DenseMultilinearExtension;
 use ark_test_curves::bls12_381::Fr; // Ajuste le chemin selon ton projet
 
@@ -52,6 +53,40 @@ impl Prover {
                     let term = match u {
                         EvaluationPoint::Infinity => delta_p,
                         EvaluationPoint::Value(v) => (delta_p * Fr::from(v)) + p0,
+                    };
+                    product_over_k *= term;
+                }
+                sum_over_hypercube += product_over_k;
+            }
+            s_i_evals[u_idx] = sum_over_hypercube;
+        }
+        s_i_evals
+    }
+
+  
+    pub fn compute_s_0_sb(&self, num_vars: usize) -> Vec<Fr> {
+        let u_d_hat = get_u_hat_domain(self.d);
+        let current_hypercube_size = 1 << num_vars;
+        let next_hypercube_size = current_hypercube_size / 2;
+
+        let mut s_i_evals = vec![Fr::ZERO; self.d];
+
+        for (u_idx, &u) in u_d_hat.iter().enumerate() {
+            let mut sum_over_hypercube = Fr::ZERO;
+
+            for x_prime in 0..next_hypercube_size {
+                let mut product_over_k = Fr::ONE;
+                let idx_0 = x_prime << 1;
+                let idx_1 = idx_0 | 1;
+
+                for k in 0..self.d {
+                    let p0 = self.list_of_arrays[k][idx_0];
+                    let p1 = self.list_of_arrays[k][idx_1];
+                    let delta_p = p1 - p0;
+
+                    let term = match u {
+                        EvaluationPoint::Infinity => delta_p,
+                        EvaluationPoint::Value(v) => small_big_mul_raw(v,&delta_p) + p0,
                     };
                     product_over_k *= term;
                 }

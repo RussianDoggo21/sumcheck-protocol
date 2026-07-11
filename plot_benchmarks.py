@@ -106,32 +106,33 @@ if os.path.exists(csv_3d_filename):
     print(f"[OK] Generated 3D surface model: '{output_3d_img}'")
 
 # ==============================================================================
-# 3. BAR CHART GENERATION (SANITY CHECK 1 RATIO)
+# 3. BAR CHART GENERATION (SANITY CHECK 1 - 4-WAY CONFIGURATION MATRIX)
 # ==============================================================================
 if os.path.exists(ratio_csv):
     df_ratio = pd.read_csv(ratio_csv)
     
-    plt.figure(figsize=(8, 5))
-    colors = ['#334e68', '#009688']
-    bars = plt.bar(df_ratio['Operation'], df_ratio['Time_ms'], color=colors, width=0.5)
+    plt.figure(figsize=(12, 6))
+    # 4 distinct colors for the 4 combinations
+    colors = ['#4a6572', '#34495e', '#1abc9c', '#009688']
     
-    slow_time = df_ratio.iloc[0]['Time_ms']
-    fast_time = df_ratio.iloc[1]['Time_ms']
-    speedup = slow_time / fast_time
+    bars = plt.bar(df_ratio['Operation'], df_ratio['Time_ms'], color=colors, width=0.6)
     
+    # Dynamic label injection on top of each bar
     for bar in bars:
         height = bar.get_height()
-        plt.text(bar.get_x() + bar.get_width()/2., height + (height*0.02),
+        plt.text(bar.get_x() + bar.get_width()/2., height + (height * 0.02),
                  f"{height:.2f} ms", ha='center', va='bottom', fontweight='bold')
                  
     plt.ylabel('Execution Time (ms) for 1M operations', fontsize=11, fontweight='bold')
-    plt.title(f'Sanity Check 1: Raw Arithmetic Acceleration ({speedup:.2f}x Faster)', fontsize=13, fontweight='bold', pad=15)
+    plt.title('Sanity Check 1: 4-Way Arithmetic Performance Matrix', fontsize=13, fontweight='bold', pad=15)
+    plt.xticks(rotation=15, ha='right', fontsize=10)
     plt.grid(axis='y', linestyle='--', alpha=0.5)
     
-    plt.ylim(0, max(slow_time, fast_time) * 1.15)
+    # Add padding to top of the graph so labels don't get cut off
+    plt.ylim(0, df_ratio['Time_ms'].max() * 1.15)
     plt.tight_layout()
     
     ratio_img = "graphs/arithmetic_speedup_benchmark.png"
     plt.savefig(ratio_img, dpi=300)
     plt.close()
-    print(f"[OK] Generated arithmetic bar chart: '{ratio_img}'")
+    print(f"[OK] Generated 4-way arithmetic bar chart: '{ratio_img}'")

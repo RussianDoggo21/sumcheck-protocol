@@ -1,7 +1,9 @@
-use ark_ff::Field;
+use ark_ff::{Field, PrimeField,BigInteger256};
 use ark_test_curves::bls12_381::Fr;
 
-use crate::improved::arithmetic::adaptive_dot_product_accumulate;
+use crate::improved::arithmetic::extrapolate_dot_product;
+
+use rayon::prelude::*;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum EvaluationPoint {
@@ -101,6 +103,7 @@ pub fn multivariate_extrapolate(
     // Global retrieving of the coefficients to avoid repeated deferencement
     let kernel_inf = kernel[0];
     let kernel_classical = &kernel[1..];
+    let kernel_classical_bigints: Vec<BigInteger256> = kernel_classical.iter().map(|c| c.into_bigint()).collect();
 
     for j in 1..=num_vars {
         let left_variants = size_d.pow((j - 1) as u32);
@@ -135,11 +138,7 @@ pub fn multivariate_extrapolate(
                     let end_idx = start_idx + k;
 
                     // Direct call on our memory pre-allocated buffer
-                    adaptive_dot_product_accumulate(
-                        &mut next_val,
-                        &working_row[start_idx..end_idx],
-                        kernel_classical,
-                    );
+                    extrapolate_dot_product(&mut next_val, &working_row[start_idx..end_idx], &kernel_classical_bigints, kernel_classical);
 
                     working_row[size_k + c] = next_val;
                 }

@@ -5,6 +5,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 pub static FAST_PATH_COUNT: AtomicU64 = AtomicU64::new(0);
 pub static SLOW_PATH_COUNT: AtomicU64 = AtomicU64::new(0);
+const DELAYED_REDUCTION_THRESHOLD: usize = 14;
 
 // Preliminary work
 // Heavy computation of the constant 2^256, once and for all
@@ -15,11 +16,95 @@ lazy_static::lazy_static! {
     };
 }
 
+pub fn extrapolate_dot_product(
+    accumulator: &mut Fr,
+    window_evals: &[Fr],
+    coeff_limbs: &[BigInteger256],
+    coefficients: &[Fr],
+) {
+    if coefficients.len() < DELAYED_REDUCTION_THRESHOLD {
+        for i in 0..coefficients.len() {
+            *accumulator += window_evals[i] * coefficients[i];
+        }
+    } else {
+        adaptive_dot_product_accumulate_precomputed(accumulator, window_evals, coeff_limbs, coefficients);
+    }
+}
+
 /// Computes a fast dot product between a window of Fr elements (which might contain small integers)
 /// and precomputed Fr coefficients, accumulating the result into `accumulator`.
 ///
 /// It dynamically optimizes the execution by using `small_big_mul_raw` when the element
 /// is small, and falls back to full field multiplication when it has already been extrapolated.
+pub fn adaptive_dot_product_accumulate_precomputed(
+    accumulator: &mut Fr,
+    window_evals: &[Fr],
+    coeff_limbs: &[BigInteger256],
+    coefficients: &[Fr],
+) {
+    assert_eq!(
+        window_evals.len(),
+        coefficients.len(),
+        "Size mismatch between window evaluations and coefficients"
+    );
+
+    let mut global_t = BigInteger384::zero();
+    let mut slow_path_sum = Fr::ZERO;
+
+    for i in 0..coefficients.len() {
+        // Optimisation Levier 1 : On récupère les limbs par référence si possible, 
+        // ou via into_bigint() si l'API l'impose, mais on évite les manipulations lourdes.
+        let bigint = window_evals[i].into_bigint();
+
+        // Levier 2 & 3 : Fusion de la vérification et de la multiplication/accumulation
+        if bigint.0[1] == 0 && bigint.0[2] == 0 && bigint.0[3] == 0 {
+            FAST_PATH_COUNT.fetch_add(1, Ordering::Relaxed);
+            let small = bigint.0[0];
+            if small == 0 {
+                continue;
+            }
+
+            // Inlining + accumulation directe pour éviter l'allocation de BigInteger384 intermédiaire
+            let small_u128 = small as u128;
+            let mut carry: u128 = 0;
+
+            // On accumule DIRECTEMENT dans les branches de global_t avec gestion du carry étendu
+            for j in 0..4 {
+                let prod = (coeff_limbs[i].0[j] as u128) * small_u128 + carry + (global_t.0[j] as u128);
+                global_t.0[j] = prod as u64;
+                carry = prod >> 64;
+            }
+            
+            // Propagation du carry sur les limbs de débordement de global_t
+            let mut j = 4;
+            while carry > 0 && j < 6 {
+                let sum = (global_t.0[j] as u128) + carry;
+                global_t.0[j] = sum as u64;
+                carry = sum >> 64;
+                j += 1;
+            }
+        } else {
+            // SLOW-PATH
+            SLOW_PATH_COUNT.fetch_add(1, Ordering::Relaxed);
+            slow_path_sum += window_evals[i] * coefficients[i];
+        }
+    }
+
+    // --- Finalisation du Fast-Path ---
+    let mut low_limbs = [0u64; 4];
+    low_limbs.copy_from_slice(&global_t.0[0..4]);
+    let mut fast_path_sum = Fr::new(BigInteger256::new(low_limbs));
+
+    if global_t.0[4] > 0 || global_t.0[5] > 0 {
+        let overflow_limbs = BigInteger256::new([global_t.0[4], global_t.0[5], 0, 0]);
+        let overflow_fr = Fr::from_bigint(overflow_limbs).unwrap();
+        fast_path_sum += overflow_fr * *R_256;
+    }
+
+    *accumulator += fast_path_sum + slow_path_sum;
+}
+
+
 pub fn adaptive_dot_product_accumulate(
     accumulator: &mut Fr,
     window_evals: &[Fr],

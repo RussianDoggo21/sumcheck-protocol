@@ -2,7 +2,7 @@
 
 use ark_test_curves::bls12_381::Fr;
 use ark_poly::DenseMultilinearExtension;
-use ark_ff::{UniformRand, Field};
+use ark_ff::{UniformRand, Field, PrimeField};
 use ark_linear_sumcheck::ml_sumcheck::data_structures::ListOfProductsOfPolynomials;
 use ark_std::rand::Rng;
 use ark_std::rc::Rc;
@@ -12,7 +12,7 @@ use std::time::Instant;
 use std::sync::atomic::Ordering;
 use std::io::Write;
 
-use crate::improved::arithmetic::{FAST_PATH_COUNT, SLOW_PATH_COUNT, adaptive_dot_product_accumulate}; // Adjust path according to your project structure
+use crate::improved::arithmetic::{FAST_PATH_COUNT, SLOW_PATH_COUNT, adaptive_dot_product_accumulate, extrapolate_dot_product}; // Adjust path according to your project structure
 
 
 // =================================================================================================
@@ -127,34 +127,78 @@ pub fn print_and_reset_arithmetic_counters() {
 /// Sanity Check 1: Measures the performance ratio between standard Big-Big multiplication 
 /// and our custom optimized Small-Big multiplication.te
 /// by forcing 100% Fast-Path vs 100% Slow-Path via controlled slice contents.
+/// Sanity Check 1: Measures the performance profile across 4 distinct combinations
+/// comparing the legacy adaptive_dot_product_accumulate against the precomputed extrapolate_dot_product
+/// using both full-size random fields (Big) and controlled integers (Small).
 pub fn run_multiplication_ratio_benchmark() {
     let mut rng = ark_std::test_rng();
     let size = 1_000_000;
 
+    println!("Running Comprehensive Sanity Check 1 Matrix...");
+
+    // 1. Setup inputs
     let big_elements: Vec<Fr> = (0..size).map(|_| Fr::rand(&mut rng)).collect();
     let small_elements: Vec<Fr> = (0..size).map(|i| Fr::from((i % 5 + 1) as u64)).collect();
     let coefficients: Vec<Fr> = (0..size).map(|_| Fr::rand(&mut rng)).collect();
+    
+    // Precompute limbs required by the new extrapolate function interface
+    let coeff_limbs: Vec<_> = coefficients.iter().map(|c| c.into_bigint()).collect();
 
-    // 1. Slow-Path
-    let mut accumulator_slow = Fr::ZERO;
-    let start_slow = Instant::now();
-    adaptive_dot_product_accumulate(&mut accumulator_slow, &big_elements, &coefficients);
-    let duration_slow = start_slow.elapsed();
+    // =========================================================================
+    // COMBINATION 1: Legacy Adaptive + Big Elements (Pure Slow-Path baseline)
+    // =========================================================================
+    let mut acc_legacy_big = Fr::ZERO;
+    let start_1 = Instant::now();
+    adaptive_dot_product_accumulate(&mut acc_legacy_big, &big_elements, &coefficients);
+    let dur_legacy_big = start_1.elapsed().as_secs_f64() * 1000.0;
 
-    // 2. Fast-Path
-    let mut accumulator_fast = Fr::ZERO;
-    let start_fast = Instant::now();
-    adaptive_dot_product_accumulate(&mut accumulator_fast, &small_elements, &coefficients);
-    let duration_fast = start_fast.elapsed();
+    // =========================================================================
+    // COMBINATION 2: Legacy Adaptive + Small Elements (Checks legacy fast-path detection)
+    // =========================================================================
+    let mut acc_legacy_small = Fr::ZERO;
+    let start_2 = Instant::now();
+    adaptive_dot_product_accumulate(&mut acc_legacy_small, &small_elements, &coefficients);
+    let dur_legacy_small = start_2.elapsed().as_secs_f64() * 1000.0;
 
-    let slow_ms = duration_slow.as_secs_f64() * 1000.0;
-    let fast_ms = duration_fast.as_secs_f64() * 1000.0;
+    // =========================================================================
+    // COMBINATION 3: New Extrapolate + Big Elements (Checks fallback mechanism overhead)
+    // =========================================================================
+    let mut acc_extrapolate_big = Fr::ZERO;
+    let start_3 = Instant::now();
+    extrapolate_dot_product(&mut acc_extrapolate_big, &big_elements, &coeff_limbs, &coefficients);
+    let dur_extrapolate_big = start_3.elapsed().as_secs_f64() * 1000.0;
 
-    // Save to a dedicated CSV file for Python
+    // =========================================================================
+    // COMBINATION 4: New Extrapolate + Small Elements (Pure optimized Fast-Path)
+    // =========================================================================
+    let mut acc_extrapolate_small = Fr::ZERO;
+    let start_4 = Instant::now();
+    extrapolate_dot_product(&mut acc_extrapolate_small, &small_elements, &coeff_limbs, &coefficients);
+    let dur_extrapolate_small = start_4.elapsed().as_secs_f64() * 1000.0;
+
+    // Assert integrity across the execution matrix
+    assert_eq!(acc_legacy_big, acc_extrapolate_big, "Mathematical mismatch on Big Elements!");
+    assert_eq!(acc_legacy_small, acc_extrapolate_small, "Mathematical mismatch on Small Elements!");
+
+    // Print the benchmark summary directly to the terminal
+    println!("------------------------------------------------------------");
+    println!("| Configuration                               | Time (ms)  |");
+    println!("------------------------------------------------------------");
+    println!("| Legacy Adaptive (Big Elements)             | {:10.4} |", dur_legacy_big);
+    println!("| Legacy Adaptive (Small Elements)           | {:10.4} |", dur_legacy_small);
+    println!("| Extrapolate Precomputed (Big Elements)      | {:10.4} |", dur_extrapolate_big);
+    println!("| Extrapolate Precomputed (Small Elements)    | {:10.4} |", dur_extrapolate_small);
+    println!("------------------------------------------------------------");
+
+    // Save to the CSV file. Note: The python plotting tool will automatically capture 
+    // these 4 discrete categories.
     let mut file = File::create("csv/multiplication_ratio.csv").expect("Unable to create ratio file");
     writeln!(file, "Operation,Time_ms").unwrap();
-    writeln!(file, "Standard Big-Big (Slow-Path),{:.4}", slow_ms).unwrap();
-    writeln!(file, "Optimized Small-Big (Fast-Path),{:.4}", fast_ms).unwrap();
+    writeln!(file, "Legacy (Big Elements),{:.4}", dur_legacy_big).unwrap();
+    writeln!(file, "Legacy (Small Elements),{:.4}", dur_legacy_small).unwrap();
+    writeln!(file, "Extrapolate (Big Elements),{:.4}", dur_extrapolate_big).unwrap();
+    writeln!(file, "Extrapolate (Small Elements),{:.4}", dur_extrapolate_small).unwrap();
+    file.flush().unwrap();
 }
 
 

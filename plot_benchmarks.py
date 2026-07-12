@@ -5,6 +5,7 @@ import os
 
 csv_3d_filename = "csv/benchmark_3d_data.csv"
 ratio_csv = "csv/multiplication_ratio.csv"
+offline_csv = "csv/offline_seq_vs_parallel.csv"  # NEW ! TO UNDERSTAND : output of bench_offline_seq_vs_parallel
 
 # ==============================================================================
 # 1. 2D COMPARATIVE GRAPH GENERATION (PER DEGREE)
@@ -48,26 +49,52 @@ if os.path.exists(csv_3d_filename):
         plt.close()
         print(f"[OK] Generated global 2D curve plot for degree d={d}: '{curve_img}'")
 
-        # ----------------------------------------------------------------------
-        # GRAPH B: SEPARATED PLOT (LinearTimeSC Vanilla VS SB1 Optimization)
-        # ----------------------------------------------------------------------
+    # ----------------------------------------------------------------------
+    # GRAPH B: SEPARATED BAR CHART (LinearTimeSC Vanilla VS SB1 Optimization)
+    # NEW ! TO UNDERSTAND : instead of generating one line-plot per degree (5 files),
+    # this now generates a single bar chart comparing all degrees at Variables = 14.
+    # ----------------------------------------------------------------------
+    fixed_l_sb1 = 14
+    df_fixed_sb1 = df_global[df_global['Variables'] == fixed_l_sb1].sort_values(by='Degree')
+
+    if not df_fixed_sb1.empty:
+        sb1_degrees = df_fixed_sb1['Degree'].tolist()
+        x_positions = range(len(sb1_degrees))
+        bar_width = 0.35
+
         plt.figure(figsize=(10, 6))
-        
-        plt.plot(df_d['Variables'], df_d['LinearTime_Vanilla_ms'], '^-', color='teal', label='LinearTime_SC (Vanilla) (ms)', linewidth=2.5)
-        plt.plot(df_d['Variables'], df_d['LinearTime_SB1_ms'], '*--', color='purple', label='LinearTime_SC (SB1 Optimized) (ms)', linewidth=2.5)
+
+        bars_vanilla = plt.bar(
+            [x - bar_width / 2 for x in x_positions], df_fixed_sb1['LinearTime_Vanilla_ms'],
+            width=bar_width, color='teal', label='LinearTime_SC (Vanilla)'
+        )
+        bars_sb1 = plt.bar(
+            [x + bar_width / 2 for x in x_positions], df_fixed_sb1['LinearTime_SB1_ms'],
+            width=bar_width, color='purple', label='LinearTime_SC (SB1 Optimized)'
+        )
+
+        # Dynamic label injection on top of each bar
+        for bar in list(bars_vanilla) + list(bars_sb1):
+            height = bar.get_height()
+            plt.text(bar.get_x() + bar.get_width() / 2., height * 1.02,
+                      f"{height:.2f}", ha='center', va='bottom', fontsize=9, fontweight='bold')
 
         plt.yscale('log')
-        plt.xlabel('Number of variables ($\\ell$)', fontsize=12, fontweight='bold', labelpad=10)
+        plt.xticks(list(x_positions), [f'd = {d}' for d in sb1_degrees])
+        plt.xlabel('Degree', fontsize=12, fontweight='bold', labelpad=10)
         plt.ylabel('Execution time (ms) - Log scale', fontsize=12, fontweight='bold', labelpad=10)
-        plt.title(f'Optimization Impact: Vanilla vs SB1 Statically Bookkept (Degree d={d})', fontsize=14, fontweight='bold', pad=15)
-        plt.grid(True, which="both", ls="--", alpha=0.5)
-        plt.legend(fontsize=11, loc='upper left')
+        plt.title(f'Optimization Impact: Vanilla vs SB1 Statically Bookkept (Variables = {fixed_l_sb1})', fontsize=14, fontweight='bold', pad=15)
+        plt.grid(axis='y', linestyle='--', alpha=0.5)
+        plt.legend(fontsize=11)
         plt.tight_layout()
-        
-        sb1_vs_vanilla_img = f'graphs/linear_time_vanilla_vs_sb1_d{d}.png'
+
+        sb1_vs_vanilla_img = 'graphs/linear_time_vanilla_vs_sb1.png'
+        os.makedirs("graphs", exist_ok=True)
         plt.savefig(sb1_vs_vanilla_img, dpi=300)
         plt.close()
-        print(f"[OK] Generated isolated Vanilla vs SB1 plot for degree d={d}: '{sb1_vs_vanilla_img}'")
+        print(f"[OK] Generated Vanilla vs SB1 bar chart: '{sb1_vs_vanilla_img}'")
+    else:
+        print(f"[WARN] No sumcheck benchmark data found for Variables = {fixed_l_sb1}, skipping Vanilla vs SB1 bar chart.")
 
 # ==============================================================================
 # 2. GLOBAL 3D SURFACE MODEL GENERATION
@@ -136,3 +163,53 @@ if os.path.exists(ratio_csv):
     plt.savefig(ratio_img, dpi=300)
     plt.close()
     print(f"[OK] Generated 4-way arithmetic bar chart: '{ratio_img}'")
+
+# ==============================================================================
+# NEW ! TO UNDERSTAND
+# 4. OFFLINE PRECOMPUTATION BENCHMARK (bench_offline_seq_vs_parallel)
+#    Fixed at Variables = 14, compares Sequential vs Parallel across all degrees
+# ==============================================================================
+if os.path.exists(offline_csv):
+    df_offline = pd.read_csv(offline_csv)
+
+    fixed_l = 14
+    df_fixed = df_offline[df_offline['Variables'] == fixed_l].sort_values(by='Degree')
+
+    if not df_fixed.empty:
+        degrees = df_fixed['Degree'].tolist()
+        x_positions = range(len(degrees))
+        bar_width = 0.35
+
+        plt.figure(figsize=(11, 7))
+
+        bars_seq = plt.bar(
+            [x - bar_width / 2 for x in x_positions], df_fixed['Offline_Sequential_ms'],
+            width=bar_width, color='#34495e', label='Sequential'
+        )
+        bars_par = plt.bar(
+            [x + bar_width / 2 for x in x_positions], df_fixed['Offline_Parallel_ms'],
+            width=bar_width, color='#1abc9c', label='Parallel'
+        )
+
+        # Dynamic label injection on top of each bar
+        for bar in list(bars_seq) + list(bars_par):
+            height = bar.get_height()
+            plt.text(bar.get_x() + bar.get_width() / 2., height * 1.02,
+                      f"{height:.2f}", ha='center', va='bottom', fontsize=9, fontweight='bold')
+
+        plt.yscale('log')
+        plt.xticks(list(x_positions), [f'd = {d}' for d in degrees])
+        plt.xlabel('Degree', fontsize=12, fontweight='bold', labelpad=10)
+        plt.ylabel(f'Offline precomputation time (ms) - Log scale', fontsize=12, fontweight='bold', labelpad=10)
+        plt.title(f'EvalProductSV: Sequential vs Parallel Offline Precomputation (Variables = {fixed_l})', fontsize=14, fontweight='bold', pad=15)
+        plt.grid(axis='y', linestyle='--', alpha=0.5)
+        plt.legend(fontsize=10)
+        plt.tight_layout()
+
+        offline_img = 'graphs/offline_seq_vs_parallel_benchmark.png'
+        os.makedirs("graphs", exist_ok=True)
+        plt.savefig(offline_img, dpi=300)
+        plt.close()
+        print(f"[OK] Generated offline sequential vs parallel bar chart: '{offline_img}'")
+    else:
+        print(f"[WARN] No offline benchmark data found for Variables = {fixed_l}, skipping bar chart.")

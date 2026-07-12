@@ -1,6 +1,6 @@
 use crate::improved::engine::{EvaluationPoint, get_u_hat_domain};
 use crate::improved::arithmetic::small_big_mul_raw;
-use ark_ff::{PrimeField,Field};
+use ark_ff::Field;
 use ark_poly::DenseMultilinearExtension;
 use ark_test_curves::bls12_381::Fr; // Ajuste le chemin selon ton projet
 

@@ -3,8 +3,6 @@ use ark_test_curves::bls12_381::Fr;
 
 use crate::improved::arithmetic::extrapolate_dot_product;
 
-use rayon::prelude::*;
-
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum EvaluationPoint {
     Infinity,

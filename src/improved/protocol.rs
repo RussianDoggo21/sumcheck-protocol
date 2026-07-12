@@ -213,6 +213,34 @@ impl EvalProductSV {
         OfflinePrecomputation { q_grid: q, chunk_size }
     }
 
+    /// PHASE 1 (Sequential variant): NEW ! TO UNDERSTAND
+    /// Strictly identical computation to `precomputation_phase`, but executed on a single
+    /// thread (no rayon `into_par_iter`/`reduce`) so it can be timed against the parallel
+    /// version in `bench_offline_seq_vs_parallel`. Not meant for production use.
+    #[inline(never)]
+    pub fn precomputation_phase_sequential(
+        &self,
+        stream: &mut dyn PolynomialStream<Fr>,
+    ) -> OfflinePrecomputation {
+        let d = stream.degree();
+        let early_window_size = self.early_window_size;
+        let grid_size = usize::pow(d + 1, early_window_size as u32);
+        let chunk_size = 1 << early_window_size;
+        let total_size = 1usize << stream.num_vars();
+        let num_chunks = total_size / chunk_size;
+
+        let mut q = vec![Fr::ZERO; grid_size];
+        for chunk_idx in 0..num_chunks {
+            let chunk = stream.chunk_at(chunk_idx, chunk_size);
+            let partial = multi_product_eval(&chunk, d, early_window_size);
+            for i in 0..grid_size {
+                q[i] += partial[i];
+            }
+        }
+
+        OfflinePrecomputation { q_grid: q, chunk_size }
+    }
+
     /// PHASE 2: Online Phase
     /// Consumes the offline grid structure, executes the interactive protocol loop 
     /// over the window, and seamlessly falls back into the linear-time execution.

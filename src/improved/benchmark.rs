@@ -16,12 +16,20 @@ use crate::improved::arithmetic::{FAST_PATH_COUNT, SLOW_PATH_COUNT, adaptive_dot
 use crate::improved::protocol::{EvalProductSV, LinearTimeSC, SumcheckProtocol};
 use crate::improved::streaming::MockStream;
 use crate::utils::{generate_multivariate_poly_test, generate_small_value_poly_test};
+// NEW ! TO UNDERSTAND : the tracking global allocator is declared once in main.rs
+// (`#[global_allocator] pub static PEAK_ALLOC: PeakAlloc = ...`); we just read it here.
+use crate::PEAK_ALLOC;
 
 // NEW ! TO UNDERSTAND : shared sweep parameters, so that run_all_sc_benchmark and
 // bench_offline_seq_vs_parallel cover the exact same (Variables, Degree) grid.
 const MAX_VARS: usize = 14;
 const NUM_RUNS: u32 = 3;
 const DEGREES_TO_TEST: [usize; 5] = [2, 3, 4, 6, 8]; // Extended range of degrees for a smooth 3D surface
+
+// NEW ! TO UNDERSTAND : memory is far more deterministic than wall-clock time (no OS/CPU
+// scheduling noise), so a single run per (Variables, Degree) point is enough — this keeps
+// the already-heavy full sweep (up to num_vars=14) from taking even longer.
+const NUM_RUNS_MEMORY: u32 = 1;
 
 // =================================================================================================
 // 1. SANITY CHECK 1 : MULTIPLICATION RATIO BENCHMARK
@@ -336,4 +344,202 @@ pub fn bench_offline_seq_vs_parallel() {
     }
 
     println!("\n[OFFLINE OK] All offline precomputation benchmarks completed successfully!");
+}
+
+// =================================================================================================
+// NEW ! TO UNDERSTAND
+// 5. MEMORY BENCHMARK (Arkworks vs LinearTimeSC vs EvalProductSV)
+//    Same (Variables, Degree) grid as run_all_sc_benchmark, but measuring PEAK HEAP MEMORY
+//    (bytes allocated on top of whatever was already resident) instead of wall-clock time.
+//    Relies on `PEAK_ALLOC` (a `peak_alloc::PeakAlloc` global allocator installed in main.rs)
+//    to observe allocations/deallocations happening anywhere in the measured closure,
+//    including inside rayon worker threads.
+// =================================================================================================
+
+/// Runs `f`, returning both its result and the PEAK extra number of bytes that were
+/// allocated (and not yet freed) at any point during the call, relative to whatever was
+/// already allocated right before the call started.
+///
+/// Note: because `PEAK_ALLOC` is a single process-wide allocator, this must be called with
+/// no other benchmark measurement running concurrently on another thread — which holds here
+/// since the whole benchmark suite runs sequentially from `main()`.
+fn measure_peak_bytes<T>(f: impl FnOnce() -> T) -> (T, usize) {
+    let baseline = PEAK_ALLOC.current_usage();
+    PEAK_ALLOC.reset_peak_usage();
+    let result = f();
+    let peak = PEAK_ALLOC.peak_usage();
+    (result, peak.saturating_sub(baseline))
+}
+
+/// NEW ! TO UNDERSTAND : memory equivalent of `run_all_sc_benchmark`. Sweeps the same
+/// (Variables, Degree) grid and writes csv/benchmark_3d_memory_data.csv.
+pub fn run_all_sc_memory_benchmark() {
+    let max_vars = MAX_VARS;
+    let num_runs = NUM_RUNS_MEMORY;
+    let degrees_to_test = DEGREES_TO_TEST;
+
+    println!("==================================================");
+    println!("        STARTING SUMCHECK MEMORY BENCHMARK         ");
+    println!("==================================================");
+
+    let global_filename = "csv/benchmark_3d_memory_data.csv";
+    let mut file = File::create(global_filename).expect("Unable to create global memory file");
+    writeln!(
+        file,
+        "Variables,Degree,Arkworks_KB,LinearTime_Vanilla_KB,LinearTime_SB1_KB,EvalProductSV_Total_KB,EvalProductSV_Offline_KB,EvalProductSV_Online_KB"
+    ).unwrap();
+    drop(file);
+
+    for &d in &degrees_to_test {
+        println!("\n##################################################");
+        println!("  LAUNCHING MEMORY BENCHMARK SERIES FOR DEGREE d = {}", d);
+        println!("##################################################");
+        test_range_variables_3d_memory(max_vars, d, num_runs, global_filename);
+    }
+
+    println!("\n[GLOBAL OK] All memory benchmarks completed successfully!");
+}
+
+pub fn test_range_variables_3d_memory(max_vars: usize, d: usize, num_runs: u32, out_filename: &str) {
+    let mut file = OpenOptions::new()
+        .write(true)
+        .append(true)
+        .open(out_filename)
+        .expect("Unable to open memory data file in append mode");
+
+    for num_v in 4..=max_vars {
+        println!("\n==================================================");
+        println!(
+            " Measuring memory for {} variables (2^{} = {} points, d={})",
+            num_v, num_v, 1 << num_v, d
+        );
+        println!(" Average over {} run(s)...", num_runs);
+        println!("==================================================");
+
+        let mut total_ark: usize = 0;
+        let mut total_vanilla: usize = 0;
+        let mut total_sb1: usize = 0;
+        let mut total_sv_total: usize = 0;
+        let mut total_sv_offline: usize = 0;
+        let mut total_sv_online: usize = 0;
+
+        for run in 1..=num_runs {
+            print!("   Run {}/{}... ", run, num_runs);
+            stdout().flush().unwrap();
+
+            let (m_ark, m_vanilla, m_sb1, m_sv_total, m_sv_offline, m_sv_online) =
+                multivariate_memory_test(num_v, d);
+
+            total_ark += m_ark;
+            total_vanilla += m_vanilla;
+            total_sb1 += m_sb1;
+            total_sv_total += m_sv_total;
+            total_sv_offline += m_sv_offline;
+            total_sv_online += m_sv_online;
+
+            println!("Done.");
+        }
+
+        let num_runs_usize = num_runs as usize;
+        let avg_ark_kb = (total_ark / num_runs_usize) as f64 / 1024.0;
+        let avg_vanilla_kb = (total_vanilla / num_runs_usize) as f64 / 1024.0;
+        let avg_sb1_kb = (total_sb1 / num_runs_usize) as f64 / 1024.0;
+        let avg_sv_total_kb = (total_sv_total / num_runs_usize) as f64 / 1024.0;
+        let avg_sv_offline_kb = (total_sv_offline / num_runs_usize) as f64 / 1024.0;
+        let avg_sv_online_kb = (total_sv_online / num_runs_usize) as f64 / 1024.0;
+
+        writeln!(
+            file,
+            "{},{},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4}",
+            num_v, d, avg_ark_kb, avg_vanilla_kb, avg_sb1_kb, avg_sv_total_kb, avg_sv_offline_kb, avg_sv_online_kb
+        )
+        .unwrap();
+        file.flush().unwrap();
+    }
+}
+
+/// NEW ! TO UNDERSTAND : memory equivalent of `multivariate_test`. Runs each protocol once
+/// and reports the peak extra heap bytes allocated during that specific call, using
+/// `measure_peak_bytes`. Mirrors the structure of `multivariate_test` closely on purpose so
+/// both benchmarks stay easy to compare / keep in sync.
+fn multivariate_memory_test(num_vars: usize, d: usize) -> (usize, usize, usize, usize, usize, usize) {
+    let mut rng = rand::thread_rng();
+
+    let (list_of_poly, list_of_products) = generate_small_value_poly_test(&mut rng, num_vars, d);
+
+    let hypercube_size = 1 << num_vars;
+    let mut expected_sum = Fr::ZERO;
+    for x in 0..hypercube_size {
+        let mut product_at_x = Fr::ONE;
+        for k in 0..d {
+            product_at_x *= list_of_poly[k].evaluations[x];
+        }
+        expected_sum += product_at_x;
+    }
+
+    // --- Arkworks ---
+    let (proof, mem_ark) = measure_peak_bytes(|| {
+        MLSumcheck::prove(&list_of_products).expect("The Arkworks prover failed")
+    });
+    let ark_sum = MLSumcheck::extract_sum(&proof);
+    assert_eq!(expected_sum, ark_sum, "Local hypercube sum mismatch!");
+
+    let l = list_of_poly[0].num_vars();
+    let d_len = list_of_poly.len();
+
+    // --- LinearTimeSC Vanilla ---
+    let linear_time_protocol_vanilla = LinearTimeSC;
+    let mut stream_vanilla = MockStream::new(l, d_len, &list_of_poly);
+    let (accepted_vanilla, mem_vanilla) = measure_peak_bytes(|| {
+        linear_time_protocol_vanilla.run(&mut stream_vanilla, expected_sum)
+    });
+    assert!(accepted_vanilla);
+
+    // --- LinearTimeSC SB1 ---
+    let linear_time_protocol_sb1 = LinearTimeSC;
+    let mut stream_sb1 = MockStream::new(l, d_len, &list_of_poly);
+    let (accepted_sb1, mem_sb1) = measure_peak_bytes(|| {
+        linear_time_protocol_sb1.run_sb_1(&mut stream_sb1, expected_sum)
+    });
+    assert!(accepted_sb1);
+
+    let eval_product_sv_protocol = EvalProductSV::new(d_len, l);
+
+    // --- EvalProductSV: Total (Offline + Online run back-to-back in ONE measured window,
+    //     so this reflects the real combined peak footprint rather than the sum of two
+    //     separately-measured peaks, which could be misleading if they don't overlap). ---
+    let mut stream_sv_total = MockStream::new(l, d_len, &list_of_poly);
+    let (accepted_sv_total, mem_sv_total) = measure_peak_bytes(|| {
+        eval_product_sv_protocol.run(&mut stream_sv_total, expected_sum)
+    });
+    assert!(accepted_sv_total);
+
+    // --- EvalProductSV: Offline phase ONLY ---
+    let mut stream_sv_offline = MockStream::new(l, d_len, &list_of_poly);
+    let (_offline_data_unused, mem_sv_offline) = measure_peak_bytes(|| {
+        eval_product_sv_protocol.precomputation_phase(&mut stream_sv_offline)
+    });
+
+    // --- EvalProductSV: Online phase ONLY (its own offline precomputation is run OUTSIDE
+    //     the measured window, so the reported peak reflects only what the online phase
+    //     itself needs on top of an already-available offline grid). ---
+    let mut stream_sv_online = MockStream::new(l, d_len, &list_of_poly);
+    let offline_data_for_online = eval_product_sv_protocol.precomputation_phase(&mut stream_sv_online);
+    let (accepted_sv_online, mem_sv_online) = measure_peak_bytes(|| {
+        eval_product_sv_protocol.online_phase(&mut stream_sv_online, expected_sum, offline_data_for_online)
+    });
+    assert!(accepted_sv_online);
+
+    println!(
+        "[MEM] num_vars={} d={} | Arkworks={:.2} KB | Vanilla={:.2} KB | SB1={:.2} KB | SV_Total={:.2} KB | SV_Offline={:.2} KB | SV_Online={:.2} KB",
+        num_vars, d,
+        mem_ark as f64 / 1024.0,
+        mem_vanilla as f64 / 1024.0,
+        mem_sb1 as f64 / 1024.0,
+        mem_sv_total as f64 / 1024.0,
+        mem_sv_offline as f64 / 1024.0,
+        mem_sv_online as f64 / 1024.0,
+    );
+
+    (mem_ark, mem_vanilla, mem_sb1, mem_sv_total, mem_sv_offline, mem_sv_online)
 }

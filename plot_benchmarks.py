@@ -6,6 +6,7 @@ import os
 csv_3d_filename = "csv/benchmark_3d_data.csv"
 ratio_csv = "csv/multiplication_ratio.csv"
 offline_csv = "csv/offline_seq_vs_parallel.csv"  # NEW ! TO UNDERSTAND : output of bench_offline_seq_vs_parallel
+csv_3d_memory_filename = "csv/benchmark_3d_memory_data.csv"  # NEW ! TO UNDERSTAND : output of run_all_sc_memory_benchmark
 
 # ==============================================================================
 # 1. 2D COMPARATIVE GRAPH GENERATION (PER DEGREE)
@@ -213,3 +214,78 @@ if os.path.exists(offline_csv):
         print(f"[OK] Generated offline sequential vs parallel bar chart: '{offline_img}'")
     else:
         print(f"[WARN] No offline benchmark data found for Variables = {fixed_l}, skipping bar chart.")
+
+# ==============================================================================
+# NEW ! TO UNDERSTAND
+# 5. MEMORY BENCHMARK GRAPHS (Arkworks vs LinearTimeSC vs EvalProductSV)
+#    Mirrors sections 1 (2D per-degree curves) and 2 (3D surface) above, but for
+#    csv/benchmark_3d_memory_data.csv (peak KB instead of ms).
+# ==============================================================================
+if os.path.exists(csv_3d_memory_filename):
+    df_mem_global = pd.read_csv(csv_3d_memory_filename)
+    unique_mem_degrees = df_mem_global['Degree'].unique()
+
+    # ----------------------------------------------------------------------
+    # GRAPH A-MEM: Global Protocol Memory Benchmark (Main Curves, per degree)
+    # ----------------------------------------------------------------------
+    for d in unique_mem_degrees:
+        df_d = df_mem_global[df_mem_global['Degree'] == d].sort_values(by='Variables')
+
+        plt.figure(figsize=(11, 7))
+
+        plt.plot(df_d['Variables'], df_d['Arkworks_KB'], 's-', color='orange', label='Arkworks framework (KB)', linewidth=2)
+        plt.plot(df_d['Variables'], df_d['LinearTime_Vanilla_KB'], '^-', color='teal', label='LinearTime_SC (KB)', linewidth=2)
+        plt.plot(df_d['Variables'], df_d['EvalProductSV_Total_KB'], 'o-', color='crimson', label='EvalProductSV (KB) - Total', linewidth=2.5)
+
+        if 'EvalProductSV_Offline_KB' in df_d.columns:
+            plt.plot(df_d['Variables'], df_d['EvalProductSV_Offline_KB'], 'x--', color='purple', label='EvalProductSV - Offline (Precomp) (KB)', linewidth=1.5, alpha=0.8)
+        if 'EvalProductSV_Online_KB' in df_d.columns:
+            plt.plot(df_d['Variables'], df_d['EvalProductSV_Online_KB'], 'v--', color='coral', label='EvalProductSV - Online Phase (KB)', linewidth=1.5, alpha=0.8)
+
+        plt.yscale('log')
+        plt.xlabel('Number of variables ($\\ell$)', fontsize=12, fontweight='bold', labelpad=10)
+        plt.ylabel('Peak extra memory (KB) - Log scale', fontsize=12, fontweight='bold', labelpad=10)
+        plt.title(f'Comparative Memory Benchmark: Multivariate Sumcheck (Degree d={d})', fontsize=14, fontweight='bold', pad=15)
+        plt.grid(True, which="both", ls="--", alpha=0.5)
+        plt.legend(fontsize=10, loc='upper left')
+        plt.tight_layout()
+
+        mem_curve_img = f'graphs/sumcheck_memory_curve_d{d}.png'
+        os.makedirs("graphs", exist_ok=True)
+        plt.savefig(mem_curve_img, dpi=300)
+        plt.close()
+        print(f"[OK] Generated memory 2D curve plot for degree d={d}: '{mem_curve_img}'")
+
+    # ----------------------------------------------------------------------
+    # GRAPH B-MEM: GLOBAL 3D MEMORY SURFACE MODEL
+    # ----------------------------------------------------------------------
+    fig = plt.figure(figsize=(16, 8))
+
+    ax1 = fig.add_subplot(121, projection='3d')
+    surf1 = ax1.plot_trisurf(df_mem_global['Variables'], df_mem_global['Degree'], df_mem_global['LinearTime_Vanilla_KB'], cmap='viridis', edgecolor='none', alpha=0.85)
+    ax1.set_title('Vanilla LinearTimeSC Memory Cost', fontsize=12, fontweight='bold', pad=10)
+    ax1.set_xlabel('Variables ($\\ell$)', fontweight='bold')
+    ax1.set_ylabel('Degree ($d$)', fontweight='bold')
+    ax1.set_zlabel('Peak Memory (KB)', fontweight='bold')
+    fig.colorbar(surf1, ax=ax1, shrink=0.5, aspect=10, label='KB')
+
+    ax2 = fig.add_subplot(122, projection='3d')
+    surf2 = ax2.plot_trisurf(df_mem_global['Variables'], df_mem_global['Degree'], df_mem_global['EvalProductSV_Total_KB'], cmap='plasma', edgecolor='none', alpha=0.85)
+    ax2.set_title('Optimized EvalProductSV Memory Cost', fontsize=12, fontweight='bold', pad=10)
+    ax2.set_xlabel('Variables ($\\ell$)', fontweight='bold')
+    ax2.set_ylabel('Degree ($d$)', fontweight='bold')
+    ax2.set_zlabel('Peak Memory (KB)', fontweight='bold')
+    fig.colorbar(surf2, ax=ax2, shrink=0.5, aspect=10, label='KB')
+
+    ax1.view_init(elev=25, azim=-135)
+    ax2.view_init(elev=25, azim=-135)
+
+    plt.suptitle('Sumcheck Memory Complexity Space Profiling (3D Analysis)', fontsize=15, fontweight='bold', y=0.95)
+    plt.tight_layout()
+
+    output_3d_mem_img = "graphs/sumcheck_3d_memory_surface.png"
+    plt.savefig(output_3d_mem_img, dpi=300)
+    plt.close()
+    print(f"[OK] Generated 3D memory surface model: '{output_3d_mem_img}'")
+else:
+    print(f"[WARN] '{csv_3d_memory_filename}' not found, skipping memory benchmark graphs.")

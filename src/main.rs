@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 
 use crate::improved::protocol::{EvalProductSV, LinearTimeSC, SumcheckProtocol};
 use crate::improved::streaming::MockStream;
-use crate::utils::{generate_multivariate_poly_test, generate_small_value_poly_test, run_multiplication_ratio_benchmark};
+use crate::utils::{generate_multivariate_poly_test, generate_small_value_poly_test, run_multiplication_ratio_benchmark, bench_offline_seq_vs_parallel};
 
 fn main() {
     // Run the micro-benchmark from Sanity Check 1

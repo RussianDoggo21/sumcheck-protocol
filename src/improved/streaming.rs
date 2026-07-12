@@ -4,7 +4,7 @@ use ark_poly::{DenseMultilinearExtension, MultilinearExtension};
 /// A trait representing a stream of evaluations for d polynomials.
 /// This allows the Prover to consume data chunk by chunk without loading
 /// the entire hypercube into RAM.
-pub trait PolynomialStream<F: PrimeField> {
+pub trait PolynomialStream<F: PrimeField> : Sync {
     /// Returns the total number of variables in the global protocol (l or v).
     fn num_vars(&self) -> usize;
 
@@ -24,6 +24,11 @@ pub trait PolynomialStream<F: PrimeField> {
     /// Evaluates all underlying polynomials at a complete multi-variate point (r_1, ..., r_l)
     /// without keeping the full hypercube in memory. Required for the final oracle step.
     fn evaluate_at_point(&self, point: &[F]) -> Vec<F>;
+
+    /// Variante sans état de next_chunk : récupère directement le chunk d'indice
+    /// `chunk_index`, sans toucher au curseur interne. Nécessaire pour paralléliser
+    /// (next_chunk est intrinsèquement séquentiel à cause de son curseur mutable).
+    fn chunk_at(&self, chunk_index: usize, chunk_size: usize) -> Vec<Vec<F>>;
 }
 
 /// A mock implementation of `PolynomialStream` backed by Arkworks MLEs for unit testing.
@@ -95,5 +100,12 @@ impl<'a, F: PrimeField> PolynomialStream<F> for MockStream<'a, F> {
             .iter()
             .map(|poly| poly.evaluate(point).unwrap())
             .collect()
+    }
+
+    fn chunk_at(&self, chunk_index: usize, chunk_size: usize) -> Vec<Vec<F>> {
+        let total_size = 1 << self.l;
+        let start = chunk_index * chunk_size;
+        let end = (start + chunk_size).min(total_size);
+        self.data.iter().map(|poly| poly.evaluations[start..end].to_vec()).collect()
     }
 }

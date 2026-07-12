@@ -8,6 +8,7 @@ use crate::improved::verifier::Verifier;
 use ark_ff::{Field, PrimeField};
 use ark_poly::DenseMultilinearExtension;
 use ark_test_curves::bls12_381::Fr;
+use rayon::iter::{IntoParallelIterator, ParallelIterator};
 
 pub trait SumcheckProtocol<F: PrimeField> {
     fn run(&self, stream: &mut dyn PolynomialStream<F>, sumcheck_claim: F) -> bool;
@@ -185,23 +186,31 @@ impl EvalProductSV {
     ) -> OfflinePrecomputation {
         let d = stream.degree();
         let early_window_size = self.early_window_size;
-
         let grid_size = usize::pow(d + 1, early_window_size as u32);
-        let mut q = vec![Fr::ZERO; grid_size];
         let chunk_size = 1 << early_window_size;
-        stream.rewind();
+        let total_size = 1usize << stream.num_vars();
+        let num_chunks = total_size / chunk_size;
 
-        while let Some(chunk) = stream.next_chunk(chunk_size) {
-            let p_x_prime = multi_product_eval(&chunk, d, early_window_size);
-            for i in 0..grid_size {
-                q[i] += p_x_prime[i];
-            }
-        }
+        // Lecture seule : chunk_at ne touche pas le curseur, donc partageable entre threads.
+        let stream_ref: &dyn PolynomialStream<Fr> = &*stream;
 
-        OfflinePrecomputation {
-            q_grid: q,
-            chunk_size,
-        }
+        let q = (0..num_chunks)
+            .into_par_iter()
+            .map(|chunk_idx| {
+                let chunk = stream_ref.chunk_at(chunk_idx, chunk_size);
+                multi_product_eval(&chunk, d, early_window_size)
+            })
+            .reduce(
+                || vec![Fr::ZERO; grid_size],
+                |mut acc, partial| {
+                    for i in 0..grid_size {
+                        acc[i] += partial[i];
+                    }
+                    acc
+                },
+            );
+
+        OfflinePrecomputation { q_grid: q, chunk_size }
     }
 
     /// PHASE 2: Online Phase

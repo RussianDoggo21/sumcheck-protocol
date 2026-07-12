@@ -13,7 +13,8 @@ use std::sync::atomic::Ordering;
 use std::io::Write;
 
 use crate::improved::arithmetic::{FAST_PATH_COUNT, SLOW_PATH_COUNT, adaptive_dot_product_accumulate, extrapolate_dot_product}; // Adjust path according to your project structure
-
+use crate::improved::protocol::EvalProductSV;
+use crate::improved::streaming::MockStream;
 
 // =================================================================================================
 // 1. MULTIVARIATE / PRODUCT OF POLYNOMIALS SETUP (NEW)
@@ -199,6 +200,23 @@ pub fn run_multiplication_ratio_benchmark() {
     writeln!(file, "Extrapolate (Big Elements),{:.4}", dur_extrapolate_big).unwrap();
     writeln!(file, "Extrapolate (Small Elements),{:.4}", dur_extrapolate_small).unwrap();
     file.flush().unwrap();
+}
+
+pub fn bench_offline_seq_vs_parallel(d: usize, l: usize) {
+    let mut rng = rand::thread_rng();
+    let (list_of_poly, _) = generate_small_value_poly_test(&mut rng, l, d);
+    let protocol = EvalProductSV::new(d, l);
+
+    let mut stream = MockStream::new(l, d, &list_of_poly);
+    let start = Instant::now();
+    let _ = protocol.precomputation_phase(&mut stream); // version parallele actuelle
+    println!("d={d} l={l} : parallel offline = {:?}", start.elapsed());
+
+    // Si tu gardes une variante _sequential a cote pour comparaison :
+    // let mut stream2 = MockStream::new(l, d, &list_of_poly);
+    // let start2 = Instant::now();
+    // let _ = protocol.precomputation_phase_sequential(&mut stream2);
+    // println!("d={d} l={l} : sequential offline = {:?}", start2.elapsed());
 }
 
 

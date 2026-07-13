@@ -5,7 +5,6 @@ perf.data
 perf.data.old
 
 *.csv
-*.png
 
 # Python virtual environment (if not already ignored)
 .venv/

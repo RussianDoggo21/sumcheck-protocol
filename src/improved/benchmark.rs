@@ -3,7 +3,7 @@
 // so that main.rs only orchestrates top-level calls.
 
 use ark_test_curves::bls12_381::Fr;
-use ark_ff::{UniformRand, Field, PrimeField};
+use ark_ff::{UniformRand, Field, PrimeField, BigInteger384, BigInteger256};
 use ark_linear_sumcheck::ml_sumcheck::MLSumcheck;
 use ark_poly::MultilinearExtension;
 use std::fs::{File, OpenOptions};
@@ -12,7 +12,11 @@ use std::time::{Duration, Instant};
 use std::sync::atomic::Ordering;
 use std::io::{Write, stdout};
 
-use crate::improved::arithmetic::{FAST_PATH_COUNT, SLOW_PATH_COUNT, adaptive_dot_product_accumulate, extrapolate_dot_product}; // Adjust path according to your project structure
+use crate::improved::arithmetic::{
+    FAST_PATH_COUNT, SLOW_PATH_COUNT,
+    adaptive_dot_product_accumulate, extrapolate_dot_product,
+    small_big_mul_raw, small_big_mac_raw, finalize_delayed_reduction,
+};
 use crate::improved::protocol::{EvalProductSV, LinearTimeSC, SumcheckProtocol};
 use crate::improved::streaming::MockStream;
 use crate::utils::{generate_multivariate_poly_test, generate_small_value_poly_test};
@@ -21,7 +25,7 @@ use crate::utils::{generate_multivariate_poly_test, generate_small_value_poly_te
 use crate::PEAK_ALLOC;
 
 // NEW ! TO UNDERSTAND : shared sweep parameters, so that run_all_sc_benchmark and
-// bench_offline_seq_vs_parallel cover the exact same (Variables, Degree) grid.
+// bench_run_seq_vs_parallel cover the exact same (Variables, Degree) grid.
 const MAX_VARS: usize = 14;
 const NUM_RUNS: u32 = 3;
 const DEGREES_TO_TEST: [usize; 5] = [2, 3, 4, 6, 8]; // Extended range of degrees for a smooth 3D surface
@@ -32,56 +36,164 @@ const DEGREES_TO_TEST: [usize; 5] = [2, 3, 4, 6, 8]; // Extended range of degree
 const NUM_RUNS_MEMORY: u32 = 1;
 
 // =================================================================================================
-// 1. SANITY CHECK 1 : MULTIPLICATION RATIO BENCHMARK
+// 1. SANITY CHECK 1 : MULTIPLICATION RATIO BENCHMARKS (batch + solo)
 // =================================================================================================
 
-/// Sanity Check 1: Measures the performance profile 
-/// comparing the precomputed extrapolate_dot_product
-/// on both full-size random fields (Big) and controlled integers (Small).
+/// NEW ! TO UNDERSTAND : orchestrator. Runs both the batch (dot-product) comparison and the
+/// solo (single multiplication) comparison, one after the other. main.rs keeps calling this
+/// single function; nothing changes on its side.
 pub fn run_multiplication_ratio_benchmark() {
+    run_batch_multiplication_benchmark();
+    run_solo_multiplication_benchmark();
+}
+
+/// Sanity Check 1 (batch): measures the cost of a full dot product (1,000,000 terms in a
+/// single call) under several code paths, on two operand regimes (big/random vs small-value).
+fn run_batch_multiplication_benchmark() {
     let mut rng = ark_std::test_rng();
     let size = 1_000_000;
 
-    println!("Running Comprehensive Sanity Check 1 Matrix...");
+    println!("Running Sanity Check 1 (batch): dot product over {size} terms...");
 
-    // 1. Setup inputs
     let big_elements: Vec<Fr> = (0..size).map(|_| Fr::rand(&mut rng)).collect();
-    let small_elements: Vec<Fr> = (0..size).map(|i| Fr::from((i % 5 + 1) as u64)).collect();
+    let small_elements: Vec<Fr> = (0..size).map(|_| Fr::from(10u64)).collect();
     let coefficients: Vec<Fr> = (0..size).map(|_| Fr::rand(&mut rng)).collect();
-    
-    // Precompute limbs required by the new extrapolate function interface
     let coeff_limbs: Vec<_> = coefficients.iter().map(|c| c.into_bigint()).collect();
 
-    // =========================================================================
-    // COMBINATION 3: New Extrapolate + Big Elements (Checks fallback mechanism overhead)
-    // =========================================================================
+    // Naive per-term multiply-accumulate loop (plain Fr * Fr), used as the "obvious,
+    // unoptimized" baseline -- this is the code you would write if you had never heard of
+    // small-value arithmetic.
+    let mut acc_naive_big = Fr::ZERO;
+    let start = Instant::now();
+    for i in 0..size {
+        acc_naive_big += big_elements[i] * coefficients[i];
+    }
+    let dur_naive_big = start.elapsed().as_secs_f64() * 1000.0;
+
+    let mut acc_naive_small = Fr::ZERO;
+    let start = Instant::now();
+    for i in 0..size {
+        acc_naive_small += small_elements[i] * coefficients[i];
+    }
+    let dur_naive_small = start.elapsed().as_secs_f64() * 1000.0;
+
     let mut acc_extrapolate_big = Fr::ZERO;
-    let start_3 = Instant::now();
+    let start = Instant::now();
     extrapolate_dot_product(&mut acc_extrapolate_big, &big_elements, &coeff_limbs, &coefficients);
-    let dur_extrapolate_big = start_3.elapsed().as_secs_f64() * 1000.0;
+    let dur_extrapolate_big = start.elapsed().as_secs_f64() * 1000.0;
 
-    // =========================================================================
-    // COMBINATION 4: New Extrapolate + Small Elements (Pure optimized Fast-Path)
-    // =========================================================================
     let mut acc_extrapolate_small = Fr::ZERO;
-    let start_4 = Instant::now();
+    let start = Instant::now();
     extrapolate_dot_product(&mut acc_extrapolate_small, &small_elements, &coeff_limbs, &coefficients);
-    let dur_extrapolate_small = start_4.elapsed().as_secs_f64() * 1000.0;
+    let dur_extrapolate_small = start.elapsed().as_secs_f64() * 1000.0;
 
-    // Print the benchmark summary directly to the terminal
+    // NEW ! TO UNDERSTAND : mirrors the solo benchmark's structure at batch scale --
+    // window_evals' bigints are ALSO precomputed outside the timed loop (like coeff_limbs
+    // already are), and the loop assumes every element is small (true here, by construction
+    // of small_elements) so it can skip the per-term into_bigint()/smallness check entirely
+    // and just run small_big_mac_raw, finalizing once at the very end. This isolates the
+    // delayed-reduction technique's true achievable throughput, stripped of the per-term
+    // detection cost that extrapolate_dot_product necessarily pays in the general case (it
+    // cannot know in advance which elements are small).
+    let small_bigints: Vec<BigInteger256> = small_elements.iter().map(|e| e.into_bigint()).collect();
+    let mut acc_precomputed_small = Fr::ZERO;
+    let start = Instant::now();
+    let mut global_t = BigInteger384::zero();
+    for i in 0..size {
+        let small = small_bigints[i].0[0]; // guaranteed small by construction of small_elements
+        small_big_mac_raw(&mut global_t, small, &coeff_limbs[i]);
+    }
+    acc_precomputed_small += finalize_delayed_reduction(&global_t);
+    let dur_precomputed_small = start.elapsed().as_secs_f64() * 1000.0;
+
+    assert_eq!(acc_naive_big, acc_extrapolate_big, "Mathematical mismatch on Big Elements!");
+    assert_eq!(acc_naive_small, acc_extrapolate_small, "Mathematical mismatch on Extrapolate Small!");
+    assert_eq!(acc_naive_small, acc_precomputed_small, "Mathematical mismatch on Precomputed Small!");
+
     println!("------------------------------------------------------------");
     println!("| Configuration                               | Time (ms)  |");
     println!("------------------------------------------------------------");
-    println!("| Extrapolate Precomputed (Big Elements)      | {:10.4} |", dur_extrapolate_big);
-    println!("| Extrapolate Precomputed (Small Elements)    | {:10.4} |", dur_extrapolate_small);
+    println!("| Naive (Big Elements)                        | {:10.4} |", dur_naive_big);
+    println!("| Naive (Small Elements)                      | {:10.4} |", dur_naive_small);
+    println!("| Extrapolate (Big Elements)                  | {:10.4} |", dur_extrapolate_big);
+    println!("| Extrapolate (Small Elements)                | {:10.4} |", dur_extrapolate_small);
+    println!("| Extrapolate (Small, bigints precomputed)    | {:10.4} |", dur_precomputed_small);
     println!("------------------------------------------------------------");
 
-    // Save to the CSV file. Note: The python plotting tool will automatically capture 
-    // these 4 discrete categories.
-    let mut file = File::create("csv/multiplication_ratio.csv").expect("Unable to create ratio file");
+    let mut file = File::create("csv/multiplication_ratio_batch.csv").expect("Unable to create batch ratio file");
     writeln!(file, "Operation,Time_ms").unwrap();
+    writeln!(file, "Naive (Big Elements),{:.4}", dur_naive_big).unwrap();
+    writeln!(file, "Naive (Small Elements),{:.4}", dur_naive_small).unwrap();
     writeln!(file, "Extrapolate (Big Elements),{:.4}", dur_extrapolate_big).unwrap();
     writeln!(file, "Extrapolate (Small Elements),{:.4}", dur_extrapolate_small).unwrap();
+    writeln!(file, "Extrapolate (Small bigints precomputed),{:.4}", dur_precomputed_small).unwrap();
+    file.flush().unwrap();
+}
+
+/// Sanity Check 1 bis (solo). Measures the cost of a SINGLE multiplication `small * big`
+/// under four different code paths: sb / bb / arkworks / small_big_mac_raw (isolated).
+fn run_solo_multiplication_benchmark() {
+    let mut rng = ark_std::test_rng();
+    let size = 1_000_000;
+
+    println!("Running Sanity Check 1 bis (solo): single multiplication, 4 code paths...");
+
+    let small: u64 = 13;
+    let small_as_fr = Fr::from(small);
+    let bigs: Vec<Fr> = (0..size).map(|_| Fr::rand(&mut rng)).collect();
+    let bigs2: Vec<Fr> = (0..size).map(|_| Fr::rand(&mut rng)).collect();
+
+    for i in 0..1000 {
+        let expected = small_as_fr * bigs[i];
+        assert_eq!(small_big_mul_raw(small, &bigs[i]), expected, "sb mismatch");
+        let mut global_t = BigInteger384::zero();
+        small_big_mac_raw(&mut global_t, small, &bigs[i].into_bigint());
+        assert_eq!(finalize_delayed_reduction(&global_t), expected, "small_big_mac_raw mismatch");
+    }
+
+    let mut sink = Fr::ZERO;
+
+    let start = Instant::now();
+    for i in 0..size { sink += small_big_mul_raw(small, &bigs[i]); }
+    sink = std::hint::black_box(sink);
+    let dur_sb = start.elapsed().as_secs_f64() * 1e9 / size as f64;
+
+    let start = Instant::now();
+    for i in 0..size { sink += bigs[i] * bigs2[i]; }
+    sink = std::hint::black_box(sink);
+    let dur_bb = start.elapsed().as_secs_f64() * 1e9 / size as f64;
+
+    let start = Instant::now();
+    for i in 0..size { sink += small_as_fr * bigs[i]; }
+    sink = std::hint::black_box(sink);
+    let dur_arkworks = start.elapsed().as_secs_f64() * 1e9 / size as f64;
+
+    let bigints: Vec<BigInteger256> = bigs.iter().map(|b| b.into_bigint()).collect();
+
+    let start = Instant::now();
+    for i in 0..size {
+        let mut global_t = BigInteger384::zero();
+        small_big_mac_raw(&mut global_t, small, &bigints[i]);
+        std::hint::black_box(&global_t);
+    }
+    let dur_mac = start.elapsed().as_secs_f64() * 1e9 / size as f64;
+
+    println!("------------------------------------------------------------");
+    println!("| Configuration                    | Time (ns/call)        |");
+    println!("------------------------------------------------------------");
+    println!("| sb (small_big_mul_raw)           | {:10.2}             |", dur_sb);
+    println!("| bb (native big * big)            | {:10.2}             |", dur_bb);
+    println!("| arkworks (Fr::from(small) * big) | {:10.2}             |", dur_arkworks);
+    println!("| small_big_mac_raw (single term)  | {:10.2}             |", dur_mac);
+    println!("------------------------------------------------------------");
+    assert!(sink != Fr::ZERO, "sink was optimized away -- benchmark results are meaningless");
+
+    let mut file = File::create("csv/multiplication_ratio_solo.csv").expect("Unable to create solo ratio file");
+    writeln!(file, "Operation,Time_ns").unwrap();
+    writeln!(file, "sb (small_big_mul_raw),{:.4}", dur_sb).unwrap();
+    writeln!(file, "bb (native big * big),{:.4}", dur_bb).unwrap();
+    writeln!(file, "arkworks (Fr::from(small) * big),{:.4}", dur_arkworks).unwrap();
+    writeln!(file, "small_big_mac_raw (single term),{:.4}", dur_mac).unwrap();
     file.flush().unwrap();
 }
 
@@ -89,9 +201,9 @@ pub fn run_multiplication_ratio_benchmark() {
 // 2. FULL SUMCHECK PROTOCOL BENCHMARK (Arkworks vs LinearTimeSC vs EvalProductSV)
 // =================================================================================================
 
-/// NEW ! TO UNDERSTAND : this function used to be the body of `main()` in main.rs.
-/// It now owns the whole "3D" sumcheck protocol benchmark: it sweeps over degrees and
-/// number of variables, and writes everything to csv/benchmark_3d_data.csv.
+/// This function used to be the body of `main()` in main.rs. It now owns the whole "3D"
+/// sumcheck protocol benchmark: it sweeps over degrees and number of variables, and writes
+/// everything to csv/benchmark_3d_data.csv.
 pub fn run_all_sc_benchmark() {
     let max_vars = MAX_VARS;
     let num_runs = NUM_RUNS;
@@ -101,12 +213,13 @@ pub fn run_all_sc_benchmark() {
     println!("       STARTING SUMCHECK PROTOCOL BENCHMARK        ");
     println!("==================================================");
 
-    // Initialize the global 3D benchmark file
+    // NEW ! TO UNDERSTAND : EvalProductSV_Offline_ms/EvalProductSV_Online_ms columns removed --
+    // EvalProductSV is now called via a single `run()`, so there is only one timing left for it.
     let global_filename = "csv/benchmark_3d_data.csv";
     let mut file = File::create(global_filename).expect("Unable to create global file");
     writeln!(
         file,
-        "Variables,Degree,Arkworks_ms,LinearTime_Vanilla_ms,LinearTime_SB1_ms,EvalProductSV_Total_ms,EvalProductSV_Offline_ms,EvalProductSV_Online_ms"
+        "Variables,Degree,Arkworks_ms,LinearTime_Vanilla_ms,LinearTime_SB1_ms,EvalProductSV_Total_ms"
     ).unwrap();
     drop(file); // Close to avoid borrow issues, append mode will be used later
 
@@ -139,20 +252,18 @@ pub fn test_range_variables_3d(max_vars: usize, d: usize, num_runs: u32, out_fil
         let mut total_ark = Duration::ZERO;
         let mut total_vanilla = Duration::ZERO;
         let mut total_sb1 = Duration::ZERO;
-        let mut total_sv_offline = Duration::ZERO;
-        let mut total_sv_online = Duration::ZERO;
+        let mut total_sv = Duration::ZERO;
 
         for run in 1..=num_runs {
             print!("   Run {}/{}... ", run, num_runs);
             stdout().flush().unwrap();
 
-            let (d_ark, d_vanilla, d_sb1, d_sv_offline, d_sv_online) = multivariate_test(num_v, d);
+            let (d_ark, d_vanilla, d_sb1, d_sv) = multivariate_test(num_v, d);
 
             total_ark += d_ark;
             total_vanilla += d_vanilla;
             total_sb1 += d_sb1;
-            total_sv_offline += d_sv_offline;
-            total_sv_online += d_sv_online;
+            total_sv += d_sv;
 
             println!("Done.");
         }
@@ -160,39 +271,28 @@ pub fn test_range_variables_3d(max_vars: usize, d: usize, num_runs: u32, out_fil
         let avg_ark = total_ark / num_runs;
         let avg_vanilla = total_vanilla / num_runs;
         let avg_sb1 = total_sb1 / num_runs;
-        let avg_sv_offline = total_sv_offline / num_runs;
-        let avg_sv_online = total_sv_online / num_runs;
-        let avg_sv_total = avg_sv_offline + avg_sv_online;
+        let avg_sv = total_sv / num_runs;
 
         let duration_ark_ms = avg_ark.as_secs_f64() * 1000.0;
         let duration_vanilla_ms = avg_vanilla.as_secs_f64() * 1000.0;
         let duration_sb1_ms = avg_sb1.as_secs_f64() * 1000.0;
-        let duration_sv_offline_ms = avg_sv_offline.as_secs_f64() * 1000.0;
-        let duration_sv_online_ms = avg_sv_online.as_secs_f64() * 1000.0;
-        let duration_sv_total_ms = avg_sv_total.as_secs_f64() * 1000.0;
+        let duration_sv_ms = avg_sv.as_secs_f64() * 1000.0;
 
         // Save structured entry for 3D engine plotting [X=Variables, Y=Degree, Z=Times...]
         writeln!(
             file,
-            "{},{},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4}",
-            num_v, d, duration_ark_ms, duration_vanilla_ms, duration_sb1_ms, duration_sv_total_ms, duration_sv_offline_ms, duration_sv_online_ms
+            "{},{},{:.4},{:.4},{:.4},{:.4}",
+            num_v, d, duration_ark_ms, duration_vanilla_ms, duration_sb1_ms, duration_sv_ms
         )
         .unwrap();
         file.flush().unwrap();
     }
 }
 
-fn multivariate_test(num_vars: usize, d: usize) -> (Duration, Duration, Duration, Duration, Duration) {
+fn multivariate_test(num_vars: usize, d: usize) -> (Duration, Duration, Duration, Duration) {
     let mut rng = rand::thread_rng();
-    
-    // --- SETUP SELECTOR FOR SANITY CHECK 0 ---
-    // Standard setup with full-size random field elements (Fast-path rate will be 0.00%):
-    // let (list_of_poly, list_of_products) = generate_multivariate_poly_test(&mut rng, num_vars, d);
-    
-    // Optimized small-value setting setup (Triggers the custom fast-path branches):
+
     let (list_of_poly, list_of_products) = generate_small_value_poly_test(&mut rng, num_vars, d);
-    //let (list_of_poly, list_of_products) = generate_multivariate_poly_test(&mut rng, num_vars, d);
-    // -----------------------------------------
 
     let hypercube_size = 1 << num_vars;
     let mut expected_sum = Fr::ZERO;
@@ -227,26 +327,22 @@ fn multivariate_test(num_vars: usize, d: usize) -> (Duration, Duration, Duration
     let duration_sb1 = start_sb1.elapsed();
     assert!(verifier_accepted_sb1);
 
+    // NEW ! TO UNDERSTAND : EvalProductSV is now a single call -- no more separate
+    // precomputation_phase/online_phase timings, per your tutor's note.
     let eval_product_sv_protocol = EvalProductSV::new(d_len, l);
     let mut stream_sv = MockStream::new(l, d_len, &list_of_poly);
 
-    // Measure the Offline Phase (Pure geometric precomputation)
-    let start_offline = Instant::now();
-    let offline_data = eval_product_sv_protocol.precomputation_phase(&mut stream_sv);
-    let duration_sv_offline = start_offline.elapsed();
-
-    // Measure the Online Phase (Rounds simulation + Final Phase with interaction)
-    let start_online = Instant::now();
-    let verifier_accepted_sv = eval_product_sv_protocol.online_phase(&mut stream_sv, expected_sum, offline_data);
-    let duration_sv_online = start_online.elapsed();
+    let start_sv = Instant::now();
+    let verifier_accepted_sv = eval_product_sv_protocol.run(&mut stream_sv, expected_sum);
+    let duration_sv = start_sv.elapsed();
     assert!(verifier_accepted_sv);
 
     // --- SANITY CHECK 0 INTEGRATION ---
     // Print stats and automatically reset counters for the next variable iteration
     println!("\n[STATS] Evaluation results for num_vars = {} and degree d = {}:", num_vars, d);
-    print_and_reset_arithmetic_counters(); 
+    print_and_reset_arithmetic_counters();
 
-    (duration_arkworks, duration_vanilla, duration_sb1, duration_sv_offline, duration_sv_online)
+    (duration_arkworks, duration_vanilla, duration_sb1, duration_sv)
 }
 
 // =================================================================================================
@@ -275,35 +371,38 @@ pub fn print_and_reset_arithmetic_counters() {
 }
 
 // =================================================================================================
-// 4. OFFLINE PHASE : SEQUENTIAL VS PARALLEL BENCHMARK
+// 4. WHOLE-PROTOCOL SEQUENTIAL VS PARALLEL BENCHMARK
 // =================================================================================================
 
-/// NEW ! TO UNDERSTAND : bench_offline_seq_vs_parallel now sweeps over the same
-/// (Degree, Variables) grid as run_all_sc_benchmark (same DEGREES_TO_TEST / MAX_VARS /
-/// NUM_RUNS constants), and measures BOTH the parallel and the sequential offline
-/// precomputation phase for each (d, l) pair. Results are written to
-/// csv/offline_seq_vs_parallel.csv so they can be plotted the same way.
-pub fn bench_offline_seq_vs_parallel() {
+/// NEW ! TO UNDERSTAND : renamed from bench_offline_seq_vs_parallel. Since EvalProductSV no
+/// longer exposes a separate "offline phase", this now compares the two whole-protocol entry
+/// points instead: `run_sequential` (grid built with a plain for-loop) vs `run` (grid built
+/// with rayon). The "online" part (interactive rounds + final linear descent) is identical,
+/// unparallelized code in both, so it contributes equally to both timings and doesn't distort
+/// the comparison -- what moves is exactly the benefit of parallelizing the grid construction.
+/// Sweeps the same (Degree, Variables) grid as run_all_sc_benchmark. Results are written to
+/// csv/run_seq_vs_parallel.csv.
+pub fn bench_run_seq_vs_parallel() {
     println!("==================================================");
-    println!("   STARTING OFFLINE PRECOMPUTATION BENCHMARK       ");
-    println!("   (Sequential vs Parallel - EvalProductSV)        ");
+    println!("   STARTING WHOLE-PROTOCOL BENCHMARK               ");
+    println!("   (Sequential vs Parallel - EvalProductSV::run)   ");
     println!("==================================================");
 
-    let filename = "csv/offline_seq_vs_parallel.csv";
-    let mut file = File::create(filename).expect("Unable to create offline benchmark file");
-    writeln!(file, "Variables,Degree,Offline_Sequential_ms,Offline_Parallel_ms").unwrap();
+    let filename = "csv/run_seq_vs_parallel.csv";
+    let mut file = File::create(filename).expect("Unable to create run seq/parallel benchmark file");
+    writeln!(file, "Variables,Degree,Run_Sequential_ms,Run_Parallel_ms").unwrap();
     drop(file); // Close to avoid borrow issues, append mode will be used below
 
     for &d in &DEGREES_TO_TEST {
         println!("\n##################################################");
-        println!("  OFFLINE BENCHMARK SERIES FOR DEGREE d = {}", d);
+        println!("  RUN BENCHMARK SERIES FOR DEGREE d = {}", d);
         println!("##################################################");
 
         let mut file = OpenOptions::new()
             .write(true)
             .append(true)
             .open(filename)
-            .expect("Unable to open offline benchmark file in append mode");
+            .expect("Unable to open run seq/parallel benchmark file in append mode");
 
         let l = 14;
         let mut rng = rand::thread_rng();
@@ -317,17 +416,27 @@ pub fn bench_offline_seq_vs_parallel() {
             print!("   d={d} l={l} run {run}/{NUM_RUNS}... ");
             stdout().flush().unwrap();
 
-            // Sequential offline precomputation
+            let hypercube_size = 1 << l;
+            let mut expected_sum = Fr::ZERO;
+            for x in 0..hypercube_size {
+                let mut product_at_x = Fr::ONE;
+                for k in 0..d { product_at_x *= list_of_poly[k].evaluations[x]; }
+                expected_sum += product_at_x;
+            }
+
+            // Sequential whole-protocol run
             let mut stream_seq = MockStream::new(l, d, &list_of_poly);
             let start_seq = Instant::now();
-            let _ = protocol.precomputation_phase_sequential(&mut stream_seq);
+            let accepted_seq = protocol.run_sequential(&mut stream_seq, expected_sum);
             total_sequential += start_seq.elapsed();
+            assert!(accepted_seq);
 
-            // Parallel offline precomputation (current default implementation)
+            // Parallel whole-protocol run (current default implementation)
             let mut stream_par = MockStream::new(l, d, &list_of_poly);
             let start_par = Instant::now();
-            let _ = protocol.precomputation_phase(&mut stream_par);
+            let accepted_par = protocol.run(&mut stream_par, expected_sum);
             total_parallel += start_par.elapsed();
+            assert!(accepted_par);
 
             println!("Done.");
         }
@@ -335,7 +444,7 @@ pub fn bench_offline_seq_vs_parallel() {
         let avg_sequential_ms = (total_sequential / NUM_RUNS).as_secs_f64() * 1000.0;
         let avg_parallel_ms = (total_parallel / NUM_RUNS).as_secs_f64() * 1000.0;
         println!(
-            "d={d} l={l} : average sequential offline = {:.4} ms | average parallel offline = {:.4} ms",
+            "d={d} l={l} : average sequential run = {:.4} ms | average parallel run = {:.4} ms",
             avg_sequential_ms, avg_parallel_ms
         );
 
@@ -343,11 +452,10 @@ pub fn bench_offline_seq_vs_parallel() {
         file.flush().unwrap();
     }
 
-    println!("\n[OFFLINE OK] All offline precomputation benchmarks completed successfully!");
+    println!("\n[RUN OK] All sequential vs parallel benchmarks completed successfully!");
 }
 
 // =================================================================================================
-// NEW ! TO UNDERSTAND
 // 5. MEMORY BENCHMARK (Arkworks vs LinearTimeSC vs EvalProductSV)
 //    Same (Variables, Degree) grid as run_all_sc_benchmark, but measuring PEAK HEAP MEMORY
 //    (bytes allocated on top of whatever was already resident) instead of wall-clock time.
@@ -371,8 +479,8 @@ fn measure_peak_bytes<T>(f: impl FnOnce() -> T) -> (T, usize) {
     (result, peak.saturating_sub(baseline))
 }
 
-/// NEW ! TO UNDERSTAND : memory equivalent of `run_all_sc_benchmark`. Sweeps the same
-/// (Variables, Degree) grid and writes csv/benchmark_3d_memory_data.csv.
+/// Memory equivalent of `run_all_sc_benchmark`. Sweeps the same (Variables, Degree) grid and
+/// writes csv/benchmark_3d_memory_data.csv.
 pub fn run_all_sc_memory_benchmark() {
     let max_vars = MAX_VARS;
     let num_runs = NUM_RUNS_MEMORY;
@@ -382,11 +490,13 @@ pub fn run_all_sc_memory_benchmark() {
     println!("        STARTING SUMCHECK MEMORY BENCHMARK         ");
     println!("==================================================");
 
+    // NEW ! TO UNDERSTAND : EvalProductSV_Offline_KB/EvalProductSV_Online_KB columns removed,
+    // same reason as in run_all_sc_benchmark -- EvalProductSV is a single call now.
     let global_filename = "csv/benchmark_3d_memory_data.csv";
     let mut file = File::create(global_filename).expect("Unable to create global memory file");
     writeln!(
         file,
-        "Variables,Degree,Arkworks_KB,LinearTime_Vanilla_KB,LinearTime_SB1_KB,EvalProductSV_Total_KB,EvalProductSV_Offline_KB,EvalProductSV_Online_KB"
+        "Variables,Degree,Arkworks_KB,LinearTime_Vanilla_KB,LinearTime_SB1_KB,EvalProductSV_Total_KB"
     ).unwrap();
     drop(file);
 
@@ -419,23 +529,18 @@ pub fn test_range_variables_3d_memory(max_vars: usize, d: usize, num_runs: u32, 
         let mut total_ark: usize = 0;
         let mut total_vanilla: usize = 0;
         let mut total_sb1: usize = 0;
-        let mut total_sv_total: usize = 0;
-        let mut total_sv_offline: usize = 0;
-        let mut total_sv_online: usize = 0;
+        let mut total_sv: usize = 0;
 
         for run in 1..=num_runs {
             print!("   Run {}/{}... ", run, num_runs);
             stdout().flush().unwrap();
 
-            let (m_ark, m_vanilla, m_sb1, m_sv_total, m_sv_offline, m_sv_online) =
-                multivariate_memory_test(num_v, d);
+            let (m_ark, m_vanilla, m_sb1, m_sv) = multivariate_memory_test(num_v, d);
 
             total_ark += m_ark;
             total_vanilla += m_vanilla;
             total_sb1 += m_sb1;
-            total_sv_total += m_sv_total;
-            total_sv_offline += m_sv_offline;
-            total_sv_online += m_sv_online;
+            total_sv += m_sv;
 
             println!("Done.");
         }
@@ -444,25 +549,25 @@ pub fn test_range_variables_3d_memory(max_vars: usize, d: usize, num_runs: u32, 
         let avg_ark_kb = (total_ark / num_runs_usize) as f64 / 1024.0;
         let avg_vanilla_kb = (total_vanilla / num_runs_usize) as f64 / 1024.0;
         let avg_sb1_kb = (total_sb1 / num_runs_usize) as f64 / 1024.0;
-        let avg_sv_total_kb = (total_sv_total / num_runs_usize) as f64 / 1024.0;
-        let avg_sv_offline_kb = (total_sv_offline / num_runs_usize) as f64 / 1024.0;
-        let avg_sv_online_kb = (total_sv_online / num_runs_usize) as f64 / 1024.0;
+        let avg_sv_kb = (total_sv / num_runs_usize) as f64 / 1024.0;
 
         writeln!(
             file,
-            "{},{},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4}",
-            num_v, d, avg_ark_kb, avg_vanilla_kb, avg_sb1_kb, avg_sv_total_kb, avg_sv_offline_kb, avg_sv_online_kb
+            "{},{},{:.4},{:.4},{:.4},{:.4}",
+            num_v, d, avg_ark_kb, avg_vanilla_kb, avg_sb1_kb, avg_sv_kb
         )
         .unwrap();
         file.flush().unwrap();
     }
 }
 
-/// NEW ! TO UNDERSTAND : memory equivalent of `multivariate_test`. Runs each protocol once
-/// and reports the peak extra heap bytes allocated during that specific call, using
-/// `measure_peak_bytes`. Mirrors the structure of `multivariate_test` closely on purpose so
-/// both benchmarks stay easy to compare / keep in sync.
-fn multivariate_memory_test(num_vars: usize, d: usize) -> (usize, usize, usize, usize, usize, usize) {
+/// Memory equivalent of `multivariate_test`. Runs each protocol once and reports the peak
+/// extra heap bytes allocated during that specific call, using `measure_peak_bytes`.
+///
+/// NEW ! TO UNDERSTAND : EvalProductSV is now measured as a single `run()` call -- the
+/// separate offline-only / online-only memory measurements were removed along with
+/// precomputation_phase/online_phase.
+fn multivariate_memory_test(num_vars: usize, d: usize) -> (usize, usize, usize, usize) {
     let mut rng = rand::thread_rng();
 
     let (list_of_poly, list_of_products) = generate_small_value_poly_test(&mut rng, num_vars, d);
@@ -503,43 +608,22 @@ fn multivariate_memory_test(num_vars: usize, d: usize) -> (usize, usize, usize, 
     });
     assert!(accepted_sb1);
 
+    // --- EvalProductSV: single run() call ---
     let eval_product_sv_protocol = EvalProductSV::new(d_len, l);
-
-    // --- EvalProductSV: Total (Offline + Online run back-to-back in ONE measured window,
-    //     so this reflects the real combined peak footprint rather than the sum of two
-    //     separately-measured peaks, which could be misleading if they don't overlap). ---
-    let mut stream_sv_total = MockStream::new(l, d_len, &list_of_poly);
-    let (accepted_sv_total, mem_sv_total) = measure_peak_bytes(|| {
-        eval_product_sv_protocol.run(&mut stream_sv_total, expected_sum)
+    let mut stream_sv = MockStream::new(l, d_len, &list_of_poly);
+    let (accepted_sv, mem_sv) = measure_peak_bytes(|| {
+        eval_product_sv_protocol.run(&mut stream_sv, expected_sum)
     });
-    assert!(accepted_sv_total);
-
-    // --- EvalProductSV: Offline phase ONLY ---
-    let mut stream_sv_offline = MockStream::new(l, d_len, &list_of_poly);
-    let (_offline_data_unused, mem_sv_offline) = measure_peak_bytes(|| {
-        eval_product_sv_protocol.precomputation_phase(&mut stream_sv_offline)
-    });
-
-    // --- EvalProductSV: Online phase ONLY (its own offline precomputation is run OUTSIDE
-    //     the measured window, so the reported peak reflects only what the online phase
-    //     itself needs on top of an already-available offline grid). ---
-    let mut stream_sv_online = MockStream::new(l, d_len, &list_of_poly);
-    let offline_data_for_online = eval_product_sv_protocol.precomputation_phase(&mut stream_sv_online);
-    let (accepted_sv_online, mem_sv_online) = measure_peak_bytes(|| {
-        eval_product_sv_protocol.online_phase(&mut stream_sv_online, expected_sum, offline_data_for_online)
-    });
-    assert!(accepted_sv_online);
+    assert!(accepted_sv);
 
     println!(
-        "[MEM] num_vars={} d={} | Arkworks={:.2} KB | Vanilla={:.2} KB | SB1={:.2} KB | SV_Total={:.2} KB | SV_Offline={:.2} KB | SV_Online={:.2} KB",
+        "[MEM] num_vars={} d={} | Arkworks={:.2} KB | Vanilla={:.2} KB | SB1={:.2} KB | EvalProductSV={:.2} KB",
         num_vars, d,
         mem_ark as f64 / 1024.0,
         mem_vanilla as f64 / 1024.0,
         mem_sb1 as f64 / 1024.0,
-        mem_sv_total as f64 / 1024.0,
-        mem_sv_offline as f64 / 1024.0,
-        mem_sv_online as f64 / 1024.0,
+        mem_sv as f64 / 1024.0,
     );
 
-    (mem_ark, mem_vanilla, mem_sb1, mem_sv_total, mem_sv_offline, mem_sv_online)
+    (mem_ark, mem_vanilla, mem_sb1, mem_sv)
 }

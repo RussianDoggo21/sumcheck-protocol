@@ -114,7 +114,7 @@ fn run_batch_multiplication_benchmark() {
     writeln!(file, "Naive (Big Elements),{:.4}", dur_naive_big).unwrap();
     writeln!(file, "Naive (Small Elements),{:.4}", dur_naive_small).unwrap();
     writeln!(file, "Small-big (Small bigints precomputed),{:.4}", dur_precomputed_small).unwrap();
-    writeln!(file, "Small-big (No precomputation),{:.4}", dur_precomputed_small).unwrap();
+    writeln!(file, "Small-big (No precomputation),{:.4}", dur_small).unwrap();
     file.flush().unwrap();
 }
 

@@ -137,25 +137,41 @@ pub fn multivariate_extrapolate(
     let kernel_data = kernel_cache[k]
         .as_ref()
         .expect("kernel_cache must be precomputed for every k this call can be reached with");
-    let mut current_cube = initial_evals.to_vec();
 
     // Global retrieving of the coefficients to avoid repeated deferencement
     let kernel_inf = kernel_data.kernel_inf;
     let kernel_classical = &kernel_data.kernel_classical;
     let kernel_classical_bigints = &kernel_data.kernel_classical_bigints;
 
+    // NEW ! TO UNDERSTAND : double-buffering. The cube's size grows monotonically across the
+    // `j` loop -- from size_k^(num_vars-1)*size_d at j=1 up to size_d^num_vars at j=num_vars,
+    // its largest value (since size_d >= size_k always) -- so instead of allocating a fresh
+    // `next_cube` Vec on every single iteration (perf showed this as `Vec::extend_trusted` /
+    // `spec_extend` / `from_iter` churn, ~7% of the profile), we allocate exactly two buffers
+    // ONCE, sized to that largest capacity, and ping-pong which one is "current" vs "next" by
+    // parity of `j`. Each iteration only reads/writes the valid prefix implied by that
+    // iteration's own left_variants/right_variants -- the unused tail of each buffer is never
+    // touched, so leaving it as stale data from an earlier iteration is harmless.
+    let max_size = size_d.pow(num_vars as u32);
+    let mut buf_a = vec![Fr::ZERO; max_size];
+    let mut buf_b = vec![Fr::ZERO; max_size];
+    buf_a[..initial_evals.len()].copy_from_slice(initial_evals);
+
+    // UNIQUE WORK BUFFER BY AXIS (prevent millions of Vec allocations)
+    let mut working_row = vec![Fr::ZERO; size_d];
+
     for j in 1..=num_vars {
         let left_variants = size_d.pow((j - 1) as u32);
         let right_variants = size_k.pow((num_vars - j) as u32);
 
-        let next_cube_size = left_variants * size_d * right_variants;
-        let mut next_cube = vec![Fr::ZERO; next_cube_size];
-
         let current_axis_stride = right_variants;
         let next_axis_stride = right_variants;
 
-        // UNIQUE WORK BUFFER BY AXIS (prevent millions of Vec allocations)
-        let mut working_row = vec![Fr::ZERO; size_d];
+        let (current_cube, next_cube): (&Vec<Fr>, &mut Vec<Fr>) = if j % 2 == 1 {
+            (&buf_a, &mut buf_b)
+        } else {
+            (&buf_b, &mut buf_a)
+        };
 
         for xl in 0..left_variants {
             for xr in 0..right_variants {
@@ -189,10 +205,13 @@ pub fn multivariate_extrapolate(
                 }
             }
         }
-        current_cube = next_cube;
     }
 
-    current_cube
+    // NEW ! TO UNDERSTAND : mirrors the ping-pong parity above (loop starts at j=1 writing
+    // into buf_b) -- after `num_vars` iterations the final, full-size (size_d^num_vars) result
+    // lives in buf_b if num_vars is odd, buf_a if even. No final copy/truncate needed: both
+    // buffers are already exactly `max_size` long and the last iteration fills it completely.
+    if num_vars % 2 == 1 { buf_b } else { buf_a }
 }
 
 /// Implementation of Procedure 1: MultiProductEval
@@ -233,17 +252,29 @@ pub fn multi_product_eval(polynomials: &[Vec<Fr>], d: usize, v: usize, kernel_ca
     // 1. Base case: if d = 1, g(x) = p_1(x)
     // Map the initial Boolean hypercube {0, 1}^v to the U_1^v grid layout [inf, 0]
     if d == 1 {
-        let mut current_grid = polynomials[0].clone();
+        let len = polynomials[0].len();
         let u_1_domain = get_u_domain(1); // Contains [Infinity, Value(0)]
+
+        // NEW ! TO UNDERSTAND : double-buffering. Unlike multivariate_extrapolate, this grid's
+        // size is CONSTANT across every iteration (always `len` = 2^v -- we're relayouting in
+        // place, not growing), so the fix is simpler: allocate exactly two buffers of size
+        // `len` ONCE and ping-pong between them by parity of `var`, instead of reallocating a
+        // fresh `next_grid` Vec on every one of the `v` iterations.
+        let mut buf_a = polynomials[0].clone();
+        let mut buf_b = vec![Fr::ZERO; len];
 
         for var in 0..v {
             // BLACK-BOXED
             let stride = usize::pow(2, var as u32);
             let chunk_size = stride * 2;
 
-            let mut next_grid = vec![Fr::ZERO; current_grid.len()];
+            let (current_grid, next_grid): (&Vec<Fr>, &mut Vec<Fr>) = if var % 2 == 0 {
+                (&buf_a, &mut buf_b)
+            } else {
+                (&buf_b, &mut buf_a)
+            };
 
-            for chunk in 0..(current_grid.len() / chunk_size) {
+            for chunk in 0..(len / chunk_size) {
                 let offset = chunk * chunk_size; // BLACK-BOXED
                 for i in 0..stride {
                     let p0 = current_grid[offset + i]; // Evaluation at point 0
@@ -264,9 +295,11 @@ pub fn multi_product_eval(polynomials: &[Vec<Fr>], d: usize, v: usize, kernel_ca
                     }
                 }
             }
-            current_grid = next_grid;
         }
-        return current_grid;
+
+        // NEW ! TO UNDERSTAND : after `v` iterations (loop starts at var=0 writing into buf_b),
+        // the final data lives in buf_a if v is even, buf_b if v is odd.
+        return if v % 2 == 0 { buf_a } else { buf_b };
     }
 
     // 2. Divide: split the polynomials into two halves
@@ -414,81 +447,3 @@ pub fn dynamic_folding_step<F: Field>(
 
     next_q
 }
-
-/* 
-/// Extrapolates a vector of evaluations using an ultra-optimized sliding window approach.
-/// - `evals_`:  initially contains e_k (size k+1): [p(inf), p(0), p(1), ..., p(k-1)]
-/// - `kernel`: precomputed kernel slice of size k+1, containing [C_inf, C_0, ..., C_{k-1}]
-/// - `k`: Base size of the window
-/// - `num_extrap`: number of additional points to calculate (e.g., 4 to grow from e_4 to e_8)
-pub fn univariate_extrapolate(evals: &mut Vec<Fr>, kernel: &[Fr], k: usize, num_extrap: usize) {
-    evals.reserve(num_extrap);
-
-    let kernel_inf = kernel[0];
-    let kernel_classical = &kernel[1..];
-
-    let p_inf = evals[0];
-    let inf_term = p_inf * kernel_inf;
-
-    for c in 0..num_extrap {
-        // Target initialized with the infinity term
-        let mut next_val = inf_term;
-
-        // Extract the sub-slice of Fr elements currently inside our shifting window
-        // &evals[start_idx..end_idx] := p(c), ..., p(c+k-1)
-        let start_idx = 1 + c;
-        let end_idx = start_idx + k;
-
-        // next_val += dot_product(evals[strat_idx..end_idx], kernel_classical)
-        adaptive_dot_product_accumulate(
-            &mut next_val,
-            &evals[start_idx..end_idx],
-            kernel_classical,
-        );
-
-        evals.push(next_val);
-    }
-}
-*/
-
-/* 
-/// Linearly interpolates a set of d+1 evaluations over U_d at a specific challenge point `challenge`.
-/// Expected input layout structure: [p(inf), p(0), p(1), ..., p(d-1)]
-pub fn interpolate_at_point(evals: &[Fr], challenge: Fr) -> Fr {
-    let d = evals.len() - 1;
-    let mut classical_points = Vec::with_capacity(d);
-    for val in 0..d {
-        classical_points.push(Fr::from(val as u64));
-    }
-
-    // 1. Classical Lagrange interpolation over the d finite points (0 to d-1)
-    let mut lagrange_sum = Fr::ZERO;
-    for i in 0..d {
-        let mut numerator = Fr::ONE;
-        let mut denominator = Fr::ONE;
-        let x_i = classical_points[i];
-
-        for j in 0..d {
-            if i != j {
-                let x_j = classical_points[j];
-                numerator *= challenge - x_j;
-                denominator *= x_i - x_j;
-            }
-        }
-        let l_i = numerator * denominator.inverse().unwrap_or(Fr::ZERO);
-        lagrange_sum += evals[i + 1] * l_i; // evals[i+1] corresponds to evaluation of the poly at point 'i'
-    }
-
-    // 2. Vanishing polynomial product: \prod (r_i - x_k)
-    let mut vanishing_prod = Fr::ONE;
-    for x_i in &classical_points {
-        vanishing_prod *= challenge - x_i;
-    }
-
-    // 3. Extract the leading coefficient (evaluation at infinity at index 0)
-    let leading_coeff = evals[0];
-
-    // Combine using Lemma 2 formula
-    (leading_coeff * vanishing_prod) + lagrange_sum
-}
-*/

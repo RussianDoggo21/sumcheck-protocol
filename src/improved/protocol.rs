@@ -10,7 +10,7 @@ use crate::improved::verifier::Verifier;
 use ark_ff::{Field, PrimeField};
 use ark_poly::DenseMultilinearExtension;
 use ark_test_curves::bls12_381::Fr;
-use rayon::iter::{IntoParallelIterator, ParallelIterator};
+use rayon::iter::{IndexedParallelIterator, IntoParallelIterator, ParallelIterator};
 use std::sync::atomic::Ordering;
 
 pub trait SumcheckProtocol<F: PrimeField> {
@@ -166,8 +166,18 @@ impl EvalProductSV {
         // `compute_kernel(k)` (k modular inversions) from scratch on every chunk.
         let kernel_cache = precompute_kernel_cache(d);
 
+        // NEW ! TO UNDERSTAND : forces a coarser grain than rayon's default adaptive splitting.
+        // Without this, for large num_chunks (e.g. num_vars=14 with a small early_window_size),
+        // rayon ends up with far more tasks than useful work per task, causing constant
+        // sleep/wake churn between workers (perf showed ~20%+ cumulative in `schedule`,
+        // `finish_task_switch`, `futex_wait`, `Sleep::sleep`). Targeting ~4 tasks per worker
+        // thread keeps load-balancing reasonable while sharply cutting the number of
+        // steal/wake events.
+        let min_len = (num_chunks / (rayon::current_num_threads() * 4)).max(1);
+
         (0..num_chunks)
             .into_par_iter()
+            .with_min_len(min_len)
             .map(|chunk_idx| {
                 let chunk = stream.chunk_at(chunk_idx, chunk_size);
                 // NEW ! TO UNDERSTAND : local to this chunk/task, no atomics involved while

@@ -27,11 +27,11 @@ fn main() {
     // all the actual logic lives in benchmark.rs
     
     run_multiplication_ratio_benchmark();
-    //run_all_sc_benchmark();
+    run_all_sc_benchmark();
     // NEW ! TO UNDERSTAND : bench_offline_seq_vs_parallel now sweeps internally over the
     // same (Degree, Variables) grid as run_all_sc_benchmark, so it no longer takes args.
-    //bench_run_seq_vs_parallel();
+    bench_run_seq_vs_parallel();
     // NEW ! TO UNDERSTAND : same (Degree, Variables) grid again, but measuring peak heap
     // memory instead of wall-clock time, for Arkworks / LinearTimeSC / EvalProductSV.
-    //run_all_sc_memory_benchmark();
+    run_all_sc_memory_benchmark();
 }

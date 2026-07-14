@@ -13,7 +13,7 @@ pub static SLOW_PATH_COUNT: AtomicU64 = AtomicU64::new(0);
 // finalize_delayed_reduction's fixed cost is ~1 full mul) puts the break-even around k=~1.3-2.
 // Re-benchmark/re-profile after changing this; revert to a higher value if it doesn't help for
 // your data distribution.
-const DELAYED_REDUCTION_THRESHOLD: usize = 2;
+const DELAYED_REDUCTION_THRESHOLD: usize = 3;
 
 // Precomputed constant equal to 2^256 mod p, used to fold the overflow limbs of a delayed
 // reduction accumulator back into the field.
@@ -52,7 +52,7 @@ pub fn extrapolate_dot_product(
 /// `pub(crate)` because benchmark.rs also uses it directly (Sanity Check 1) to measure its
 /// standalone, single-term cost against `small_big_mul_raw`. // NEW ! TO UNDERSTAND
 #[inline(always)]
-pub(crate) fn small_big_mac_raw(global_t: &mut BigInteger384, small: u64, coeff_limbs: &BigInteger256) {
+pub(crate) fn small_big_raw(global_t: &mut BigInteger384, small: u64, coeff_limbs: &BigInteger256) {
     let small_u128 = small as u128;
     let mut carry: u128 = 0;
 
@@ -134,7 +134,7 @@ pub fn adaptive_dot_product_accumulate_precomputed(
             if small == 0 {
                 continue;
             }
-            small_big_mac_raw(&mut global_t, small, &coeff_limbs[i]);
+            small_big_raw(&mut global_t, small, &coeff_limbs[i]);
         } else {
             *local_slow += 1;
             slow_path_sum += window_evals[i] * coefficients[i];
@@ -174,7 +174,7 @@ pub fn adaptive_dot_product_accumulate(
                 continue;
             }
             let coeff_limbs = coefficients[i].into_bigint();
-            small_big_mac_raw(&mut global_t, small, &coeff_limbs);
+            small_big_raw(&mut global_t, small, &coeff_limbs);
         } else {
             SLOW_PATH_COUNT.fetch_add(1, Ordering::Relaxed);
             slow_path_sum += window_evals[i] * coefficients[i];

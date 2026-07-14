@@ -15,7 +15,7 @@ use std::io::{Write, stdout};
 use crate::improved::arithmetic::{
     FAST_PATH_COUNT, SLOW_PATH_COUNT,
     adaptive_dot_product_accumulate, extrapolate_dot_product,
-    small_big_mul_raw, small_big_mac_raw, finalize_delayed_reduction,
+    small_big_raw, finalize_delayed_reduction,
 };
 use crate::improved::protocol::{EvalProductSV, LinearTimeSC, SumcheckProtocol};
 use crate::improved::streaming::MockStream;
@@ -77,65 +77,49 @@ fn run_batch_multiplication_benchmark() {
     }
     let dur_naive_small = start.elapsed().as_secs_f64() * 1000.0;
 
-    let mut acc_extrapolate_big = Fr::ZERO;
-    // NEW ! TO UNDERSTAND : dummy local counters -- this call is single-threaded (Sanity Check
-    // 1), so contention was never a concern here, but the signature changed (see arithmetic.rs).
-    let mut dummy_fast: u64 = 0;
-    let mut dummy_slow: u64 = 0;
-    let start = Instant::now();
-    extrapolate_dot_product(&mut acc_extrapolate_big, &big_elements, &coeff_limbs, &coefficients, &mut dummy_fast, &mut dummy_slow);
-    let dur_extrapolate_big = start.elapsed().as_secs_f64() * 1000.0;
-
-    let mut acc_extrapolate_small = Fr::ZERO;
-    let start = Instant::now();
-    extrapolate_dot_product(&mut acc_extrapolate_small, &small_elements, &coeff_limbs, &coefficients, &mut dummy_fast, &mut dummy_slow);
-    let dur_extrapolate_small = start.elapsed().as_secs_f64() * 1000.0;
-
     // NEW ! TO UNDERSTAND : mirrors the solo benchmark's structure at batch scale --
     // window_evals' bigints are ALSO precomputed outside the timed loop (like coeff_limbs
     // already are), and the loop assumes every element is small (true here, by construction
     // of small_elements) so it can skip the per-term into_bigint()/smallness check entirely
-    // and just run small_big_mac_raw, finalizing once at the very end. This isolates the
+    // and just run small_big_raw, finalizing once at the very end. This isolates the
     // delayed-reduction technique's true achievable throughput, stripped of the per-term
     // detection cost that extrapolate_dot_product necessarily pays in the general case (it
     // cannot know in advance which elements are small).
+    let start0 =  Instant::now();
     let small_bigints: Vec<BigInteger256> = small_elements.iter().map(|e| e.into_bigint()).collect();
     let mut acc_precomputed_small = Fr::ZERO;
     let start = Instant::now();
     let mut global_t = BigInteger384::zero();
     for i in 0..size {
         let small = small_bigints[i].0[0]; // guaranteed small by construction of small_elements
-        small_big_mac_raw(&mut global_t, small, &coeff_limbs[i]);
+        small_big_raw(&mut global_t, small, &coeff_limbs[i]);
     }
     acc_precomputed_small += finalize_delayed_reduction(&global_t);
     let dur_precomputed_small = start.elapsed().as_secs_f64() * 1000.0;
+    let dur_small = start0.elapsed().as_secs_f64() * 1000.0;
 
-    assert_eq!(acc_naive_big, acc_extrapolate_big, "Mathematical mismatch on Big Elements!");
-    assert_eq!(acc_naive_small, acc_extrapolate_small, "Mathematical mismatch on Extrapolate Small!");
     assert_eq!(acc_naive_small, acc_precomputed_small, "Mathematical mismatch on Precomputed Small!");
 
     println!("------------------------------------------------------------");
-    println!("| Configuration                               | Time (ms)  |");
+    println!("| Configuration                                     | Time (ms) |");
     println!("------------------------------------------------------------");
-    println!("| Naive (Big Elements)                        | {:10.4} |", dur_naive_big);
-    println!("| Naive (Small Elements)                      | {:10.4} |", dur_naive_small);
-    println!("| Extrapolate (Big Elements)                  | {:10.4} |", dur_extrapolate_big);
-    println!("| Extrapolate (Small Elements)                | {:10.4} |", dur_extrapolate_small);
-    println!("| Extrapolate (Small, bigints precomputed)    | {:10.4} |", dur_precomputed_small);
+    println!("| Naive (Big Elements)                              | {:10.4}   |", dur_naive_big);
+    println!("| Naive (Small Elements)                            | {:10.4}   |", dur_naive_small);
+    println!("| Small-big multiplication (bigints precomputed)    | {:10.4}   |", dur_precomputed_small);
+    println!("| Small-big multiplication (no precomputation)    | {:10.4}   |", dur_small);
     println!("------------------------------------------------------------");
 
     let mut file = File::create("csv/multiplication_ratio_batch.csv").expect("Unable to create batch ratio file");
     writeln!(file, "Operation,Time_ms").unwrap();
     writeln!(file, "Naive (Big Elements),{:.4}", dur_naive_big).unwrap();
     writeln!(file, "Naive (Small Elements),{:.4}", dur_naive_small).unwrap();
-    writeln!(file, "Extrapolate (Big Elements),{:.4}", dur_extrapolate_big).unwrap();
-    writeln!(file, "Extrapolate (Small Elements),{:.4}", dur_extrapolate_small).unwrap();
-    writeln!(file, "Extrapolate (Small bigints precomputed),{:.4}", dur_precomputed_small).unwrap();
+    writeln!(file, "Small-big (Small bigints precomputed),{:.4}", dur_precomputed_small).unwrap();
+    writeln!(file, "Small-big (No precomputation),{:.4}", dur_precomputed_small).unwrap();
     file.flush().unwrap();
 }
 
 /// Sanity Check 1 bis (solo). Measures the cost of a SINGLE multiplication `small * big`
-/// under four different code paths: sb / bb / arkworks / small_big_mac_raw (isolated).
+/// under four different code paths: sb / bb / arkworks / small_big_raw (isolated).
 fn run_solo_multiplication_benchmark() {
     let mut rng = ark_std::test_rng();
     let size = 1_000_000;
@@ -149,18 +133,12 @@ fn run_solo_multiplication_benchmark() {
 
     for i in 0..1000 {
         let expected = small_as_fr * bigs[i];
-        assert_eq!(small_big_mul_raw(small, &bigs[i]), expected, "sb mismatch");
         let mut global_t = BigInteger384::zero();
-        small_big_mac_raw(&mut global_t, small, &bigs[i].into_bigint());
-        assert_eq!(finalize_delayed_reduction(&global_t), expected, "small_big_mac_raw mismatch");
+        small_big_raw(&mut global_t, small, &bigs[i].into_bigint());
+        assert_eq!(finalize_delayed_reduction(&global_t), expected, "small_big_raw mismatch");
     }
 
     let mut sink = Fr::ZERO;
-
-    let start = Instant::now();
-    for i in 0..size { sink += small_big_mul_raw(small, &bigs[i]); }
-    sink = std::hint::black_box(sink);
-    let dur_sb = start.elapsed().as_secs_f64() * 1e9 / size as f64;
 
     let start = Instant::now();
     for i in 0..size { sink += bigs[i] * bigs2[i]; }
@@ -172,32 +150,34 @@ fn run_solo_multiplication_benchmark() {
     sink = std::hint::black_box(sink);
     let dur_arkworks = start.elapsed().as_secs_f64() * 1e9 / size as f64;
 
+    let start0 = Instant::now();
     let bigints: Vec<BigInteger256> = bigs.iter().map(|b| b.into_bigint()).collect();
 
     let start = Instant::now();
     for i in 0..size {
         let mut global_t = BigInteger384::zero();
-        small_big_mac_raw(&mut global_t, small, &bigints[i]);
+        small_big_raw(&mut global_t, small, &bigints[i]);
         std::hint::black_box(&global_t);
     }
     let dur_mac = start.elapsed().as_secs_f64() * 1e9 / size as f64;
+    let dur_mac0 = start0.elapsed().as_secs_f64() * 1e9 / size as f64;
 
     println!("------------------------------------------------------------");
-    println!("| Configuration                    | Time (ns/call)        |");
+    println!("| Configuration                    | Time (ns/call)      |");
     println!("------------------------------------------------------------");
-    println!("| sb (small_big_mul_raw)           | {:10.2}             |", dur_sb);
     println!("| bb (native big * big)            | {:10.2}             |", dur_bb);
     println!("| arkworks (Fr::from(small) * big) | {:10.2}             |", dur_arkworks);
-    println!("| small_big_mac_raw (single term)  | {:10.2}             |", dur_mac);
+    println!("| small_big_raw (without conversion and reduction)    | {:10.2}             |", dur_mac);
+    println!("| small_big_raw (with conversion and reduction)    | {:10.2}             |", dur_mac0);
     println!("------------------------------------------------------------");
     assert!(sink != Fr::ZERO, "sink was optimized away -- benchmark results are meaningless");
 
     let mut file = File::create("csv/multiplication_ratio_solo.csv").expect("Unable to create solo ratio file");
     writeln!(file, "Operation,Time_ns").unwrap();
-    writeln!(file, "sb (small_big_mul_raw),{:.4}", dur_sb).unwrap();
     writeln!(file, "bb (native big * big),{:.4}", dur_bb).unwrap();
     writeln!(file, "arkworks (Fr::from(small) * big),{:.4}", dur_arkworks).unwrap();
-    writeln!(file, "small_big_mac_raw (single term),{:.4}", dur_mac).unwrap();
+    writeln!(file, "small_big_raw (without conversion and reduction),{:.4}", dur_mac).unwrap();
+    writeln!(file, "small_big_raw (with conversion and reduction),{:.4}", dur_mac0).unwrap();
     file.flush().unwrap();
 }
 

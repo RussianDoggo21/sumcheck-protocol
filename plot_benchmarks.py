@@ -152,7 +152,7 @@ if os.path.exists(batch_ratio_csv):
                  f"{height:.2f} ms", ha='center', va='bottom', fontweight='bold')
                  
     plt.ylabel('Execution Time (ms) for a 1,000,000-term dot product', fontsize=11, fontweight='bold')
-    plt.title('Sanity Check 1 (Batch): Dot-Product Performance Matrix', fontsize=13, fontweight='bold', pad=15)
+    plt.title('Dot-Product Performance Matrix', fontsize=13, fontweight='bold', pad=15)
     plt.xticks(rotation=15, ha='right', fontsize=10)
     plt.grid(axis='y', linestyle='--', alpha=0.5)
     plt.ylim(0, df_ratio['Time_ms'].max() * 1.15)
@@ -182,7 +182,7 @@ if os.path.exists(solo_ratio_csv):
                   f"{height:.2f} ns", ha='center', va='bottom', fontweight='bold')
 
     plt.ylabel('Execution Time (ns) for a single multiplication', fontsize=11, fontweight='bold')
-    plt.title('Sanity Check 1 bis (Solo): Single-Multiplication Performance Matrix', fontsize=13, fontweight='bold', pad=15)
+    plt.title('Single-Multiplication Performance Matrix', fontsize=13, fontweight='bold', pad=15)
     plt.xticks(rotation=15, ha='right', fontsize=10)
     plt.grid(axis='y', linestyle='--', alpha=0.5)
     plt.ylim(0, df_solo['Time_ns'].max() * 1.15)

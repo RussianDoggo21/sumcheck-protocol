@@ -78,13 +78,17 @@ fn run_batch_multiplication_benchmark() {
     let dur_naive_small = start.elapsed().as_secs_f64() * 1000.0;
 
     let mut acc_extrapolate_big = Fr::ZERO;
+    // NEW ! TO UNDERSTAND : dummy local counters -- this call is single-threaded (Sanity Check
+    // 1), so contention was never a concern here, but the signature changed (see arithmetic.rs).
+    let mut dummy_fast: u64 = 0;
+    let mut dummy_slow: u64 = 0;
     let start = Instant::now();
-    extrapolate_dot_product(&mut acc_extrapolate_big, &big_elements, &coeff_limbs, &coefficients);
+    extrapolate_dot_product(&mut acc_extrapolate_big, &big_elements, &coeff_limbs, &coefficients, &mut dummy_fast, &mut dummy_slow);
     let dur_extrapolate_big = start.elapsed().as_secs_f64() * 1000.0;
 
     let mut acc_extrapolate_small = Fr::ZERO;
     let start = Instant::now();
-    extrapolate_dot_product(&mut acc_extrapolate_small, &small_elements, &coeff_limbs, &coefficients);
+    extrapolate_dot_product(&mut acc_extrapolate_small, &small_elements, &coeff_limbs, &coefficients, &mut dummy_fast, &mut dummy_slow);
     let dur_extrapolate_small = start.elapsed().as_secs_f64() * 1000.0;
 
     // NEW ! TO UNDERSTAND : mirrors the solo benchmark's structure at batch scale --

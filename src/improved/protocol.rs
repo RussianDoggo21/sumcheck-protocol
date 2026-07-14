@@ -1,7 +1,9 @@
 use crate::improved::engine::EvaluationPoint;
 use crate::improved::engine::{
     fold_hypercube_chunk, get_u_hat_domain, dynamic_folding_step, multi_product_eval,
+    precompute_kernel_cache, compute_lagrange_denominator_invs,
 };
+use crate::improved::arithmetic::{FAST_PATH_COUNT, SLOW_PATH_COUNT};
 use crate::improved::prover::Prover;
 use crate::improved::streaming::PolynomialStream;
 use crate::improved::verifier::Verifier;
@@ -9,6 +11,7 @@ use ark_ff::{Field, PrimeField};
 use ark_poly::DenseMultilinearExtension;
 use ark_test_curves::bls12_381::Fr;
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
+use std::sync::atomic::Ordering;
 
 pub trait SumcheckProtocol<F: PrimeField> {
     fn run(&self, stream: &mut dyn PolynomialStream<F>, sumcheck_claim: F) -> bool;
@@ -158,11 +161,28 @@ impl EvalProductSV {
         let total_size = 1usize << stream.num_vars();
         let num_chunks = total_size / chunk_size;
 
+        // NEW ! TO UNDERSTAND : precomputed ONCE and shared read-only across every chunk /
+        // rayon worker thread, instead of `multivariate_extrapolate` silently recomputing
+        // `compute_kernel(k)` (k modular inversions) from scratch on every chunk.
+        let kernel_cache = precompute_kernel_cache(d);
+
         (0..num_chunks)
             .into_par_iter()
             .map(|chunk_idx| {
                 let chunk = stream.chunk_at(chunk_idx, chunk_size);
-                multi_product_eval(&chunk, d, early_window_size)
+                // NEW ! TO UNDERSTAND : local to this chunk/task, no atomics involved while
+                // multi_product_eval recurses -- flushed into the real global atomics ONCE
+                // below, instead of once per term (see the note in arithmetic.rs).
+                let mut local_fast: u64 = 0;
+                let mut local_slow: u64 = 0;
+                let partial = multi_product_eval(&chunk, d, early_window_size, &kernel_cache, &mut local_fast, &mut local_slow);
+                if local_fast > 0 {
+                    FAST_PATH_COUNT.fetch_add(local_fast, Ordering::Relaxed);
+                }
+                if local_slow > 0 {
+                    SLOW_PATH_COUNT.fetch_add(local_slow, Ordering::Relaxed);
+                }
+                partial
             })
             .reduce(
                 || vec![Fr::ZERO; grid_size],
@@ -186,10 +206,22 @@ impl EvalProductSV {
         let total_size = 1usize << stream.num_vars();
         let num_chunks = total_size / chunk_size;
 
+        // NEW ! TO UNDERSTAND : same fix as build_grid_parallel -- precompute once, reuse
+        // across every chunk instead of recomputing compute_kernel(k) per chunk.
+        let kernel_cache = precompute_kernel_cache(d);
+
         let mut q = vec![Fr::ZERO; grid_size];
         for chunk_idx in 0..num_chunks {
             let chunk = stream.chunk_at(chunk_idx, chunk_size);
-            let partial = multi_product_eval(&chunk, d, early_window_size);
+            let mut local_fast: u64 = 0;
+            let mut local_slow: u64 = 0;
+            let partial = multi_product_eval(&chunk, d, early_window_size, &kernel_cache, &mut local_fast, &mut local_slow);
+            if local_fast > 0 {
+                FAST_PATH_COUNT.fetch_add(local_fast, Ordering::Relaxed);
+            }
+            if local_slow > 0 {
+                SLOW_PATH_COUNT.fetch_add(local_slow, Ordering::Relaxed);
+            }
             for i in 0..grid_size {
                 q[i] += partial[i];
             }
@@ -213,6 +245,11 @@ impl EvalProductSV {
 
         let u_d_hat = get_u_hat_domain(d);
         let base = d + 1;
+
+        // NEW ! TO UNDERSTAND : precomputed once per protocol run (d is fixed throughout) --
+        // see compute_lagrange_denominator_invs. Previously dynamic_folding_step recomputed
+        // these `d` modular inversions from scratch on every round of the early window.
+        let denom_inv = compute_lagrange_denominator_invs::<Fr>(d);
 
         for i in 0..early_window_size {
             let mut s_i_evals = vec![Fr::ZERO; d];
@@ -245,7 +282,7 @@ impl EvalProductSV {
             c_i = verifier.update_c_i(challenge, s_i_0);
 
             if remaining_vars > 0 {
-                q = dynamic_folding_step(&q, challenge, d, base, remaining_vars);
+                q = dynamic_folding_step(&q, challenge, d, base, remaining_vars, &denom_inv);
             }
         }
 

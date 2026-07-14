@@ -74,17 +74,54 @@ pub fn compute_kernel(k: usize) -> Vec<Fr> {
     kernel
 }
 
+/// NEW ! TO UNDERSTAND : bundles the 3 pieces of a `compute_kernel(k)` result that
+/// `multivariate_extrapolate` needs, so they can be precomputed once and shared (by reference)
+/// across every chunk / recursive call that needs the same `k`, instead of recomputing
+/// `compute_kernel(k)` (which does `k` modular inversions) from scratch every time.
+#[derive(Clone)]
+pub struct KernelData {
+    pub kernel_inf: Fr,
+    pub kernel_classical: Vec<Fr>,
+    pub kernel_classical_bigints: Vec<BigInteger256>,
+}
+
+/// Precomputes `KernelData` for every k in `1..=max_k`. `multi_product_eval`'s divide-and-
+/// conquer recursion only ever calls `multivariate_extrapolate` with k values bounded by `d`
+/// (the top-level degree), and always the SAME small set of k values across every chunk of the
+/// offline parallel phase -- so computing them once up front (instead of once per chunk, per
+/// recursion level) removes a large amount of redundant `compute_kernel` work (perf showed
+/// this as part of the `MontConfig::inverse` / `multivariate_extrapolate` overhead).
+pub fn precompute_kernel_cache(max_k: usize) -> Vec<Option<KernelData>> {
+    let mut cache = vec![None; max_k + 1];
+    for k in 1..=max_k {
+        let kernel = compute_kernel(k);
+        let kernel_inf = kernel[0];
+        let kernel_classical: Vec<Fr> = kernel[1..].to_vec();
+        let kernel_classical_bigints: Vec<BigInteger256> =
+            kernel_classical.iter().map(|c| c.into_bigint()).collect();
+        cache[k] = Some(KernelData { kernel_inf, kernel_classical, kernel_classical_bigints });
+    }
+    cache
+}
+
 /// Performs multivariate polynomial extrapolation from U_k^v to U_d^v.
 ///
 /// - `initial_evals`: Flattened evaluations over U_k^v (size must be (k+1)^num_vars)
 /// - `k`: Degree parameter / initial window size
 /// - `num_extrap`: Number of extra points to compute per axis (d - k)
 /// - `num_vars`: Number of variables (v)
+/// - `kernel_cache`: precomputed via `precompute_kernel_cache`, must have an entry for `k`
+/// - `local_fast` / `local_slow`: per-chunk local path counters (see the note on
+///   `adaptive_dot_product_accumulate_precomputed` in arithmetic.rs) -- threaded through rather
+///   than touching the global atomics directly, to avoid cross-thread contention.
 pub fn multivariate_extrapolate(
     initial_evals: &[Fr],
     k: usize,
     num_extrap: usize,
     num_vars: usize,
+    kernel_cache: &[Option<KernelData>],
+    local_fast: &mut u64,
+    local_slow: &mut u64,
 ) -> Vec<Fr> {
     let size_k = k + 1;
     let size_d = k + num_extrap + 1;
@@ -95,13 +132,17 @@ pub fn multivariate_extrapolate(
         "Initial evaluations vector size does not match (k+1)^v"
     );
 
-    let kernel = compute_kernel(k);
+    // NEW ! TO UNDERSTAND : looked up instead of recomputed via compute_kernel(k) -- see
+    // `precompute_kernel_cache`.
+    let kernel_data = kernel_cache[k]
+        .as_ref()
+        .expect("kernel_cache must be precomputed for every k this call can be reached with");
     let mut current_cube = initial_evals.to_vec();
 
     // Global retrieving of the coefficients to avoid repeated deferencement
-    let kernel_inf = kernel[0];
-    let kernel_classical = &kernel[1..];
-    let kernel_classical_bigints: Vec<BigInteger256> = kernel_classical.iter().map(|c| c.into_bigint()).collect();
+    let kernel_inf = kernel_data.kernel_inf;
+    let kernel_classical = &kernel_data.kernel_classical;
+    let kernel_classical_bigints = &kernel_data.kernel_classical_bigints;
 
     for j in 1..=num_vars {
         let left_variants = size_d.pow((j - 1) as u32);
@@ -136,7 +177,7 @@ pub fn multivariate_extrapolate(
                     let end_idx = start_idx + k;
 
                     // Direct call on our memory pre-allocated buffer
-                    extrapolate_dot_product(&mut next_val, &working_row[start_idx..end_idx], &kernel_classical_bigints, kernel_classical);
+                    extrapolate_dot_product(&mut next_val, &working_row[start_idx..end_idx], kernel_classical_bigints, kernel_classical, local_fast, local_slow);
 
                     working_row[size_k + c] = next_val;
                 }
@@ -161,7 +202,12 @@ pub fn multivariate_extrapolate(
 /// * `polynomials` - A slice of vectors where each Vec<Fr> contains the evaluations of a polynomial over {0,1}^v
 /// * `d` - The total number of polynomials to multiply
 /// * `v` - The number of variables for the polynomials in this current sub-cube
-pub fn multi_product_eval(polynomials: &[Vec<Fr>], d: usize, v: usize) -> Vec<Fr> {
+/// * `kernel_cache` - precomputed via `precompute_kernel_cache` (shared read-only across every
+///   chunk / recursive call -- see the note on `precompute_kernel_cache`)
+/// * `local_fast` / `local_slow` - per-chunk local path counters, accumulated (not atomically)
+///   across this whole call tree; the caller (one call per chunk) flushes them into the real
+///   global atomics ONCE after this returns -- see the note in arithmetic.rs.
+pub fn multi_product_eval(polynomials: &[Vec<Fr>], d: usize, v: usize, kernel_cache: &[Option<KernelData>], local_fast: &mut u64, local_slow: &mut u64) -> Vec<Fr> {
     assert_eq!(
         polynomials.len(),
         d,
@@ -227,19 +273,19 @@ pub fn multi_product_eval(polynomials: &[Vec<Fr>], d: usize, v: usize) -> Vec<Fr
     let m = d / 2;
 
     // Recursive calls for left and right sub-products
-    let q_l = multi_product_eval(&polynomials[0..m], m, v);
-    let q_r = multi_product_eval(&polynomials[m..d], d - m, v);
+    let q_l = multi_product_eval(&polynomials[0..m], m, v, kernel_cache, local_fast, local_slow);
+    let q_r = multi_product_eval(&polynomials[m..d], d - m, v, kernel_cache, local_fast, local_slow);
 
     // 3. Extrapolate both halves to the target domain U_d^v
     // For q_l: currently on U_m^v, needs to reach U_d^v.
     // Number of classical points to add = d - m
     let num_extrap_l = d - m;
-    let q_l_prime = multivariate_extrapolate(&q_l, m, num_extrap_l, v);
+    let q_l_prime = multivariate_extrapolate(&q_l, m, num_extrap_l, v, kernel_cache, local_fast, local_slow);
 
     // For q_r: currently on U_{d-m}^v, needs to reach U_d^v.
     // Number of classical points to add = m
     let num_extrap_r = m;
-    let q_r_prime = multivariate_extrapolate(&q_r, d - m, num_extrap_r, v);
+    let q_r_prime = multivariate_extrapolate(&q_r, d - m, num_extrap_r, v, kernel_cache, local_fast, local_slow);
 
     // Sanity check: both extended cubes must have identical sizes
     assert_eq!(
@@ -285,6 +331,28 @@ pub fn fold_hypercube_chunk(chunk: &[Fr], challenges: &[Fr]) -> Fr {
 }
 
 
+/// NEW ! TO UNDERSTAND : the Lagrange denominators `prod_{j!=i}(x_i - x_j)` for the fixed
+/// finite points {0, 1, ..., d-1} never depend on the round's challenge -- only the numerator
+/// does. `dynamic_folding_step` used to recompute (and re-invert) them on every single call,
+/// i.e. once per round of the early window, even though they're the same `d` values every
+/// time. Precompute them ONCE per protocol run (see `online_phase` / `run_with_grid`) and pass
+/// them in instead.
+pub fn compute_lagrange_denominator_invs<F: Field>(d: usize) -> Vec<F> {
+    let classical_points: Vec<F> = (0..d).map(|v| F::from(v as u64)).collect();
+    let mut denom_inv = vec![F::zero(); d];
+    for i in 0..d {
+        let x_i = classical_points[i];
+        let mut denominator = F::one();
+        for j in 0..d {
+            if i != j {
+                denominator *= x_i - classical_points[j];
+            }
+        }
+        denom_inv[i] = denominator.inverse().unwrap_or(F::zero());
+    }
+    denom_inv
+}
+
 /// Performs the infinity-aware dynamic folding step over the evaluation grid
 #[inline(never)]
 pub fn dynamic_folding_step<F: Field>(
@@ -293,33 +361,31 @@ pub fn dynamic_folding_step<F: Field>(
     d: usize,
     base: usize,
     remaining_vars: usize,
+    denom_inv: &[F], // NEW ! TO UNDERSTAND : precomputed once per protocol run, not per round
 ) -> Vec<F> {
     let next_grid_size = usize::pow(base, remaining_vars as u32);
     let mut next_q = vec![F::zero(); next_grid_size];
 
     // --- PHASE 1: Pre-compute scalars for the unique round challenge ---
-    
+
     // Finite evaluation points are {0, 1, ..., d-1} (size d)
     let mut classical_points = vec![F::zero(); d];
     for val in 0..d {
         classical_points[val] = F::from(val as u64);
     }
 
-    // 1.(a) Pre-compute the classical Lagrange basis coefficients for finite points
+    // 1.(a) Only the numerator (challenge-dependent) part needs recomputing every round;
+    // the denominator inverse comes from `denom_inv`, computed once outside this function.
     let mut finite_lagrange_coeffs = vec![F::zero(); d];
     for i in 0..d {
         let mut numerator = F::one();
-        let mut denominator = F::one();
-        let x_i = classical_points[i];
-        
         for j in 0..d {
             if i != j {
                 let x_j = classical_points[j];
                 numerator *= challenge - x_j;
-                denominator *= x_i - x_j;
             }
         }
-        finite_lagrange_coeffs[i] = numerator * denominator.inverse().unwrap_or(F::zero());
+        finite_lagrange_coeffs[i] = numerator * denom_inv[i];
     }
 
     // 1.(b) Pre-compute the vanishing polynomial product: \prod_{k=0}^{d-1} (challenge - x_k)

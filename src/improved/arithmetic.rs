@@ -5,7 +5,15 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 pub static FAST_PATH_COUNT: AtomicU64 = AtomicU64::new(0);
 pub static SLOW_PATH_COUNT: AtomicU64 = AtomicU64::new(0);
-const DELAYED_REDUCTION_THRESHOLD: usize = 14;
+// NEW ! TO UNDERSTAND : was 14. With DEGREES_TO_TEST maxing out at d=8, multi_product_eval's
+// recursion never produces a `coefficients.len()` (= k) above ~4, so at 14 the delayed-
+// reduction fast path never triggered at all -- every extrapolate_dot_product call fell
+// through to the plain per-term full-multiplication loop (confirmed as the #1 perf hotspot).
+// A rough cost model (small_big_mac_raw is ~4x cheaper per term than a full Fp mul, and
+// finalize_delayed_reduction's fixed cost is ~1 full mul) puts the break-even around k=~1.3-2.
+// Re-benchmark/re-profile after changing this; revert to a higher value if it doesn't help for
+// your data distribution.
+const DELAYED_REDUCTION_THRESHOLD: usize = 2;
 
 // Precomputed constant equal to 2^256 mod p, used to fold the overflow limbs of a delayed
 // reduction accumulator back into the field.
@@ -21,13 +29,15 @@ pub fn extrapolate_dot_product(
     window_evals: &[Fr],
     coeff_limbs: &[BigInteger256],
     coefficients: &[Fr],
+    local_fast: &mut u64, // NEW ! TO UNDERSTAND : per-chunk local counters, see note below
+    local_slow: &mut u64,
 ) {
     if coefficients.len() < DELAYED_REDUCTION_THRESHOLD {
         for i in 0..coefficients.len() {
             *accumulator += window_evals[i] * coefficients[i];
         }
     } else {
-        adaptive_dot_product_accumulate_precomputed(accumulator, window_evals, coeff_limbs, coefficients);
+        adaptive_dot_product_accumulate_precomputed(accumulator, window_evals, coeff_limbs, coefficients, local_fast, local_slow);
     }
 }
 
@@ -88,11 +98,23 @@ pub(crate) fn finalize_delayed_reduction(global_t: &BigInteger384) -> Fr {
 ///
 /// Dynamically routes each term to `small_big_mac_raw` when the element is small, and falls
 /// back to full field multiplication otherwise.
+///
+/// NEW ! TO UNDERSTAND : `local_fast`/`local_slow` used to be the global atomics
+/// `FAST_PATH_COUNT`/`SLOW_PATH_COUNT`, incremented with a `fetch_add` on EVERY term. Since
+/// this runs inside a rayon parallel chunk, that meant every worker thread was hammering the
+/// same two cache lines on every single term -- a textbook contention hotspot (confirmed by
+/// profiling: removing the atomics roughly halved total task-clock time). They're now plain
+/// `u64`s local to whichever chunk is being processed; the caller (`multi_product_eval`'s
+/// entry point, called once per chunk) is responsible for flushing them into the real global
+/// atomics exactly once, after the whole chunk is done -- see `build_grid_parallel` /
+/// `build_grid_sequential` in protocol.rs.
 pub fn adaptive_dot_product_accumulate_precomputed(
     accumulator: &mut Fr,
     window_evals: &[Fr],
     coeff_limbs: &[BigInteger256],
     coefficients: &[Fr],
+    local_fast: &mut u64,
+    local_slow: &mut u64,
 ) {
     assert_eq!(
         window_evals.len(),
@@ -107,14 +129,14 @@ pub fn adaptive_dot_product_accumulate_precomputed(
         let bigint = window_evals[i].into_bigint();
 
         if bigint.0[1] == 0 && bigint.0[2] == 0 && bigint.0[3] == 0 {
-            FAST_PATH_COUNT.fetch_add(1, Ordering::Relaxed);
+            *local_fast += 1;
             let small = bigint.0[0];
             if small == 0 {
                 continue;
             }
             small_big_mac_raw(&mut global_t, small, &coeff_limbs[i]);
         } else {
-            SLOW_PATH_COUNT.fetch_add(1, Ordering::Relaxed);
+            *local_slow += 1;
             slow_path_sum += window_evals[i] * coefficients[i];
         }
     }

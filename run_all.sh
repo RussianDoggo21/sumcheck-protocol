@@ -1,14 +1,8 @@
 #!/bin/bash
 
-
-
 # 1. Run the Rust benchmark
 echo "=== [1/2] Data extraction with Rust ==="
 cargo run --release
-
-# cargo build --release
-# sudo perf record --call-graph dwarf ./target/release/first_impl
-# sudo perf report
 
 # If the benchmark went correctly, we plot the results
 if [ $? -eq 0 ]; then

@@ -7,7 +7,7 @@ mod utils;
 // only used by the benchmark logic itself; that logic (and its imports) now lives in benchmark.rs.
 use crate::improved::benchmark::{
     run_multiplication_ratio_benchmark, run_all_sc_benchmark, bench_run_seq_vs_parallel,
-    run_all_sc_memory_benchmark,
+    run_all_sc_memory_benchmark, bench_bigint_vanilla_vs_sb, bench_bigint_memory,
 };
 
 // NEW ! TO UNDERSTAND : the memory benchmark needs a way to measure how much heap memory
@@ -25,7 +25,7 @@ pub static PEAK_ALLOC: PeakAlloc = PeakAlloc;
 fn main() {
     // NEW ! TO UNDERSTAND : main() is now just a thin sequence of top-level benchmark calls,
     // all the actual logic lives in benchmark.rs
-    
+
     run_multiplication_ratio_benchmark();
     run_all_sc_benchmark();
     // NEW ! TO UNDERSTAND : bench_offline_seq_vs_parallel now sweeps internally over the
@@ -34,4 +34,10 @@ fn main() {
     // NEW ! TO UNDERSTAND : same (Degree, Variables) grid again, but measuring peak heap
     // memory instead of wall-clock time, for Arkworks / LinearTimeSC / EvalProductSV.
     run_all_sc_memory_benchmark();
+    // NEW ! TO UNDERSTAND : full-protocol vanilla vs 1-sb vs sb-all, on the raw BigInt
+    // field (bigint_field.rs / bigint_sumcheck.rs) instead of arkworks' Montgomery-only
+    // Fr -- see the note above bench_bigint_vanilla_vs_sb in benchmark.rs. Now swept
+    // across the same (Degree, Variables) grid as the rest of the benchmarks.
+    bench_bigint_vanilla_vs_sb();
+    bench_bigint_memory();
 }

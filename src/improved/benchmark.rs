@@ -611,3 +611,156 @@ fn multivariate_memory_test(num_vars: usize, d: usize) -> (usize, usize, usize, 
 
     (mem_ark, mem_vanilla, mem_sb1, mem_sv)
 }
+// =================================================================================================
+// NEW ! TO UNDERSTAND
+// 6. BIGINT FIELD SANITY CHECK: full-protocol vanilla vs 1-sb vs sb-all, using StdFr2
+//    (bigint_field.rs / bigint_sumcheck.rs) instead of arkworks' Montgomery-only Fr.
+//    This is the integration requested by Christopher (NAIST tutor): the same delayed
+//    small-big technique as Sanity Check 1, but tested end-to-end, on a field
+//    representation that never leaves standard form, to see whether the technique's
+//    theoretical speedup (confirmed on the isolated primitive, see Sanity Check 1 bis)
+//    survives once wired into the real round-by-round protocol.
+// =================================================================================================
+
+use crate::improved::bigint_sumcheck::{
+    bigint_linear_time_sc_sb1, bigint_linear_time_sc_sb_all, bigint_linear_time_sc_vanilla,
+};
+
+pub fn bench_bigint_vanilla_vs_sb() {
+    println!("==================================================");
+    println!("  BIGINT FIELD SANITY CHECK (vanilla vs 1-sb vs sb-all)  ");
+    println!("==================================================");
+
+    // NEW ! TO UNDERSTAND : now sweeps the SAME (Degree, Variables) grid as
+    // run_all_sc_benchmark (DEGREES_TO_TEST x 4..=MAX_VARS) instead of a fixed
+    // [3, 6, 9] at Variables=14 only -- this is what lets plot_benchmarks.py overlay
+    // BigInt curves directly onto the existing per-degree comparative plots
+    // (sumcheck_benchmark_curve_d{d}.png), which are indexed by this exact grid.
+    let filename = "csv/bigint_vanilla_vs_sb.csv";
+    let mut file = File::create(filename).expect("Unable to create bigint sanity check file");
+    writeln!(file, "Variables,Degree,Vanilla_ms,SB1_ms,SBAll_ms").unwrap();
+
+    for &d in &DEGREES_TO_TEST {
+        for num_vars in 4..=MAX_VARS {
+            let mut rng = rand::thread_rng();
+
+            let mut total_vanilla = Duration::ZERO;
+            let mut total_sb1 = Duration::ZERO;
+            let mut total_sb_all = Duration::ZERO;
+
+            for run in 1..=NUM_RUNS {
+                print!("   d={d} num_vars={num_vars} run {run}/{NUM_RUNS}... ");
+                stdout().flush().unwrap();
+
+                let (list_of_poly, _) = generate_multivariate_poly_test(&mut rng, num_vars, d);
+
+                let hypercube_size = 1 << num_vars;
+                let mut expected_sum = Fr::ZERO;
+                for x in 0..hypercube_size {
+                    let mut product_at_x = Fr::ONE;
+                    for k in 0..d {
+                        product_at_x *= list_of_poly[k].evaluations[x];
+                    }
+                    expected_sum += product_at_x;
+                }
+
+                let mut stream_vanilla = MockStream::new(num_vars, d, &list_of_poly);
+                let start = Instant::now();
+                let ok_vanilla = bigint_linear_time_sc_vanilla(&mut stream_vanilla, expected_sum);
+                total_vanilla += start.elapsed();
+
+                let mut stream_sb1 = MockStream::new(num_vars, d, &list_of_poly);
+                let start = Instant::now();
+                let ok_sb1 = bigint_linear_time_sc_sb1(&mut stream_sb1, expected_sum);
+                total_sb1 += start.elapsed();
+
+                let mut stream_sb_all = MockStream::new(num_vars, d, &list_of_poly);
+                let start = Instant::now();
+                let ok_sb_all = bigint_linear_time_sc_sb_all(&mut stream_sb_all, expected_sum);
+                total_sb_all += start.elapsed();
+
+                assert!(ok_vanilla, "bigint vanilla REJECTED for d={d} num_vars={num_vars}");
+                assert!(ok_sb1, "bigint 1-sb REJECTED for d={d} num_vars={num_vars}");
+                assert!(ok_sb_all, "bigint sb-all REJECTED for d={d} num_vars={num_vars}");
+
+                println!("Done.");
+            }
+
+            let avg_vanilla_ms = (total_vanilla / NUM_RUNS).as_secs_f64() * 1000.0;
+            let avg_sb1_ms = (total_sb1 / NUM_RUNS).as_secs_f64() * 1000.0;
+            let avg_sb_all_ms = (total_sb_all / NUM_RUNS).as_secs_f64() * 1000.0;
+
+            println!(
+                "d={d:<2} num_vars={num_vars:<2} : vanilla = {avg_vanilla_ms:8.3} ms | 1-sb = {avg_sb1_ms:8.3} ms ({:.3}x) | sb-all = {avg_sb_all_ms:8.3} ms ({:.3}x)",
+                avg_vanilla_ms / avg_sb1_ms, avg_vanilla_ms / avg_sb_all_ms
+            );
+
+            writeln!(file, "{},{},{:.4},{:.4},{:.4}", num_vars, d, avg_vanilla_ms, avg_sb1_ms, avg_sb_all_ms).unwrap();
+            file.flush().unwrap();
+        }
+    }
+
+    println!("\n[BIGINT OK] All configurations accepted by the verifier -- results written to csv/bigint_vanilla_vs_sb.csv");
+}
+
+/// NEW ! TO UNDERSTAND : memory equivalent of bench_bigint_vanilla_vs_sb, mirroring
+/// run_all_sc_memory_benchmark's structure (single run per point, peak_alloc-based) --
+/// lets plot_benchmarks.py overlay BigInt curves onto sumcheck_memory_curve_d{d}.png.
+pub fn bench_bigint_memory() {
+    println!("==================================================");
+    println!("  BIGINT FIELD MEMORY BENCHMARK (vanilla vs 1-sb vs sb-all)  ");
+    println!("==================================================");
+
+    let filename = "csv/bigint_memory.csv";
+    let mut file = File::create(filename).expect("Unable to create bigint memory file");
+    writeln!(file, "Variables,Degree,Vanilla_KB,SB1_KB,SBAll_KB").unwrap();
+
+    for &d in &DEGREES_TO_TEST {
+        for num_vars in 4..=MAX_VARS {
+            print!("   [MEM][BIGINT] d={d} num_vars={num_vars}... ");
+            stdout().flush().unwrap();
+
+            let mut rng = rand::thread_rng();
+            let (list_of_poly, _) = generate_multivariate_poly_test(&mut rng, num_vars, d);
+
+            let hypercube_size = 1 << num_vars;
+            let mut expected_sum = Fr::ZERO;
+            for x in 0..hypercube_size {
+                let mut product_at_x = Fr::ONE;
+                for k in 0..d {
+                    product_at_x *= list_of_poly[k].evaluations[x];
+                }
+                expected_sum += product_at_x;
+            }
+
+            let mut stream_vanilla = MockStream::new(num_vars, d, &list_of_poly);
+            let (ok_vanilla, mem_vanilla) = measure_peak_bytes(|| {
+                bigint_linear_time_sc_vanilla(&mut stream_vanilla, expected_sum)
+            });
+            assert!(ok_vanilla, "bigint vanilla REJECTED for d={d} num_vars={num_vars}");
+
+            let mut stream_sb1 = MockStream::new(num_vars, d, &list_of_poly);
+            let (ok_sb1, mem_sb1) = measure_peak_bytes(|| {
+                bigint_linear_time_sc_sb1(&mut stream_sb1, expected_sum)
+            });
+            assert!(ok_sb1, "bigint 1-sb REJECTED for d={d} num_vars={num_vars}");
+
+            let mut stream_sb_all = MockStream::new(num_vars, d, &list_of_poly);
+            let (ok_sb_all, mem_sb_all) = measure_peak_bytes(|| {
+                bigint_linear_time_sc_sb_all(&mut stream_sb_all, expected_sum)
+            });
+            assert!(ok_sb_all, "bigint sb-all REJECTED for d={d} num_vars={num_vars}");
+
+            let vanilla_kb = mem_vanilla as f64 / 1024.0;
+            let sb1_kb = mem_sb1 as f64 / 1024.0;
+            let sb_all_kb = mem_sb_all as f64 / 1024.0;
+
+            println!("Vanilla={vanilla_kb:.2} KB | 1-sb={sb1_kb:.2} KB | sb-all={sb_all_kb:.2} KB");
+
+            writeln!(file, "{},{},{:.4},{:.4},{:.4}", num_vars, d, vanilla_kb, sb1_kb, sb_all_kb).unwrap();
+            file.flush().unwrap();
+        }
+    }
+
+    println!("\n[BIGINT MEM OK] results written to csv/bigint_memory.csv");
+}

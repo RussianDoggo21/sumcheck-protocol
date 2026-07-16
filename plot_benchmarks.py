@@ -8,6 +8,13 @@ batch_ratio_csv = "csv/multiplication_ratio_batch.csv"
 solo_ratio_csv = "csv/multiplication_ratio_solo.csv"
 run_seq_vs_parallel_csv = "csv/run_seq_vs_parallel.csv"  # NEW ! TO UNDERSTAND : renamed from offline_seq_vs_parallel.csv -- output of bench_run_seq_vs_parallel (EvalProductSV has no offline/online split anymore, so this now compares the whole protocol, run_sequential vs run)
 csv_3d_memory_filename = "csv/benchmark_3d_memory_data.csv"
+bigint_csv = "csv/bigint_vanilla_vs_sb.csv"  # NEW ! TO UNDERSTAND : output of bench_bigint_vanilla_vs_sb (report Section 6.5) -- now swept across the SAME (Degree, Variables) grid as the main sweep, so it can be overlaid directly onto sumcheck_benchmark_curve_d{d}.png
+bigint_memory_csv = "csv/bigint_memory.csv"  # NEW ! TO UNDERSTAND : memory equivalent, output of bench_bigint_memory -- overlaid onto sumcheck_memory_curve_d{d}.png
+
+# NEW ! TO UNDERSTAND : loaded once, shared across every per-degree plot below, same
+# pattern as df_global for the main sweep.
+df_bigint_all = pd.read_csv(bigint_csv) if os.path.exists(bigint_csv) else None
+df_bigint_mem_all = pd.read_csv(bigint_memory_csv) if os.path.exists(bigint_memory_csv) else None
 
 # ==============================================================================
 # 1. 2D COMPARATIVE GRAPH GENERATION (PER DEGREE)
@@ -41,12 +48,22 @@ if os.path.exists(csv_3d_filename):
         if 'EvalProductSV_Online_ms' in df_d.columns:
             plt.plot(df_d['Variables'], df_d['EvalProductSV_Online_ms'], 'v--', color='coral', label='EvalProductSV - Online Phase (ms)', linewidth=1.5, alpha=0.8)
 
+        # NEW ! TO UNDERSTAND : BigInt (StdFr2) curves overlaid on the same plot, when data
+        # exists for this degree. Only Vanilla and sb-all are shown (not 1-sb) to keep the
+        # plot legible -- the two extremes bracket the technique's full effect within the
+        # SAME (Montgomery-free) field, layered on top of the arkworks-based comparison.
+        if df_bigint_all is not None:
+            df_bigint_d = df_bigint_all[df_bigint_all['Degree'] == d].sort_values(by='Variables')
+            if not df_bigint_d.empty:
+                plt.plot(df_bigint_d['Variables'], df_bigint_d['Vanilla_ms'], 'D--', color='dimgray', label='BigInt (StdFr2) - Vanilla (ms)', linewidth=1.5, alpha=0.85)
+                plt.plot(df_bigint_d['Variables'], df_bigint_d['SBAll_ms'], 'D-', color='#8e44ad', label='BigInt (StdFr2) - sb-all (ms)', linewidth=1.5, alpha=0.85)
+
         plt.yscale('log')
         plt.xlabel('Number of variables ($\\ell$)', fontsize=12, fontweight='bold', labelpad=10)
         plt.ylabel('Execution time (ms) - Log scale', fontsize=12, fontweight='bold', labelpad=10)
         plt.title(f'Comparative Benchmark: Multivariate Sumcheck (Degree d={d})', fontsize=14, fontweight='bold', pad=15)
         plt.grid(True, which="both", ls="--", alpha=0.5)
-        plt.legend(fontsize=10, loc='upper left')
+        plt.legend(fontsize=9, loc='upper left')
         plt.tight_layout()
         
         curve_img = f'graphs/sumcheck_benchmark_curve_d{d}.png'
@@ -271,12 +288,19 @@ if os.path.exists(csv_3d_memory_filename):
         if 'EvalProductSV_Online_KB' in df_d.columns:
             plt.plot(df_d['Variables'], df_d['EvalProductSV_Online_KB'], 'v--', color='coral', label='EvalProductSV - Online Phase (KB)', linewidth=1.5, alpha=0.8)
 
+        # NEW ! TO UNDERSTAND : same BigInt overlay as the time-curve plots (Section 1).
+        if df_bigint_mem_all is not None:
+            df_bigint_mem_d = df_bigint_mem_all[df_bigint_mem_all['Degree'] == d].sort_values(by='Variables')
+            if not df_bigint_mem_d.empty:
+                plt.plot(df_bigint_mem_d['Variables'], df_bigint_mem_d['Vanilla_KB'], 'D--', color='dimgray', label='BigInt (StdFr2) - Vanilla (KB)', linewidth=1.5, alpha=0.85)
+                plt.plot(df_bigint_mem_d['Variables'], df_bigint_mem_d['SBAll_KB'], 'D-', color='#8e44ad', label='BigInt (StdFr2) - sb-all (KB)', linewidth=1.5, alpha=0.85)
+
         plt.yscale('log')
         plt.xlabel('Number of variables ($\\ell$)', fontsize=12, fontweight='bold', labelpad=10)
         plt.ylabel('Peak extra memory (KB) - Log scale', fontsize=12, fontweight='bold', labelpad=10)
         plt.title(f'Comparative Memory Benchmark: Multivariate Sumcheck (Degree d={d})', fontsize=14, fontweight='bold', pad=15)
         plt.grid(True, which="both", ls="--", alpha=0.5)
-        plt.legend(fontsize=10, loc='upper left')
+        plt.legend(fontsize=9, loc='upper left')
         plt.tight_layout()
 
         mem_curve_img = f'graphs/sumcheck_memory_curve_d{d}.png'
@@ -315,3 +339,57 @@ if os.path.exists(csv_3d_memory_filename):
     print(f"[OK] Generated 3D memory surface model: '{output_3d_mem_img}'")
 else:
     print(f"[WARN] '{csv_3d_memory_filename}' not found, skipping memory benchmark graphs.")
+
+# ==============================================================================
+# NEW ! TO UNDERSTAND
+# 6. BIGINT FIELD BENCHMARK (bench_bigint_vanilla_vs_sb)
+#    Standalone bar chart, fixed at Variables = 14, complementing the curve overlays
+#    added to Sections 1 and 5 above -- kept as-is for a clean, degree-by-degree
+#    side-by-side comparison of vanilla vs 1-sb vs sb-all in one place.
+# ==============================================================================
+if df_bigint_all is not None:
+    df_bigint_fixed = df_bigint_all[df_bigint_all['Variables'] == 14].sort_values(by='Degree')
+
+    if not df_bigint_fixed.empty:
+        degrees = df_bigint_fixed['Degree'].tolist()
+        x_positions = range(len(degrees))
+        bar_width = 0.25
+
+        plt.figure(figsize=(11, 7))
+
+        bars_vanilla = plt.bar(
+            [x - bar_width for x in x_positions], df_bigint_fixed['Vanilla_ms'],
+            width=bar_width, color='#34495e', label='Vanilla'
+        )
+        bars_sb1 = plt.bar(
+            x_positions, df_bigint_fixed['SB1_ms'],
+            width=bar_width, color='#1abc9c', label='1-sb (round 0 only)'
+        )
+        bars_sball = plt.bar(
+            [x + bar_width for x in x_positions], df_bigint_fixed['SBAll_ms'],
+            width=bar_width, color='#f39c12', label='sb-all (every round)'
+        )
+
+        for bar in list(bars_vanilla) + list(bars_sb1) + list(bars_sball):
+            height = bar.get_height()
+            plt.text(bar.get_x() + bar.get_width() / 2., height * 1.005,
+                      f"{height:.2f}", ha='center', va='bottom', fontsize=8, fontweight='bold')
+
+        plt.xticks(list(x_positions), [f'd = {d}' for d in degrees])
+        plt.xlabel('Degree', fontsize=12, fontweight='bold', labelpad=10)
+        plt.ylabel('Full-protocol execution time (ms)', fontsize=12, fontweight='bold', labelpad=10)
+        plt.title('BigInt Field (StdFr2): Vanilla vs 1-sb vs sb-all (Variables = 14)', fontsize=14, fontweight='bold', pad=15)
+        plt.grid(axis='y', linestyle='--', alpha=0.5)
+        plt.legend(fontsize=10)
+        plt.ylim(0, df_bigint_fixed['Vanilla_ms'].max() * 1.15)
+        plt.tight_layout()
+
+        bigint_img = 'graphs/bigint_vanilla_vs_sb_benchmark.png'
+        os.makedirs("graphs", exist_ok=True)
+        plt.savefig(bigint_img, dpi=300)
+        plt.close()
+        print(f"[OK] Generated BigInt vanilla vs sb bar chart: '{bigint_img}'")
+    else:
+        print(f"[WARN] No BigInt data found for Variables = 14, skipping BigInt vanilla vs sb bar chart.")
+else:
+    print(f"[WARN] '{bigint_csv}' not found, skipping BigInt vanilla vs sb bar chart.")

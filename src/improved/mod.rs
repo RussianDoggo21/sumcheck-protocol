@@ -1,4 +1,6 @@
 pub mod arithmetic;
+pub mod bigint_field;
+pub mod bigint_sumcheck;
 pub mod engine;
 pub mod protocol;
 pub mod prover;

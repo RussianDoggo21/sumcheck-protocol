@@ -466,3 +466,64 @@ if os.path.exists(barrett_variants_csv):
     print(f"[OK] Generated Barrett variants bar chart: '{barrett_img}'")
 else:
     print(f"[WARN] '{barrett_variants_csv}' not found, skipping Barrett variants bar chart.")
+
+# ==============================================================================
+# NEW ! TO UNDERSTAND
+# 9. D=1 SANITY CHECK (bench_naive_vs_arkworks_vs_optimized, naive/benchmark.rs)
+#    naive vs arkworks vs sc_protocol_improved (the project's own historical
+#    small-value prototype for a single multilinear polynomial). Data is per-RUN
+#    with a randomly-varying num_vars each time (not a controlled sweep), so this
+#    is rendered as a grouped bar chart indexed by run number, each bar labeled
+#    with its actual num_vars, rather than a line plot against num_vars.
+# ==============================================================================
+naive_csv = "csv/naive_vs_arkworks_vs_optimized.csv"
+if os.path.exists(naive_csv):
+    df_naive = pd.read_csv(naive_csv)
+
+    runs = df_naive['Run'].tolist()
+    num_vars_labels = [f"Run {r}\n(l={nv})" for r, nv in zip(runs, df_naive['NumVars'])]
+    x_positions = range(len(runs))
+    bar_width = 0.25
+
+    plt.figure(figsize=(11, 7))
+
+    bars_naive = plt.bar(
+        [x - bar_width for x in x_positions], df_naive['Naive_ms'],
+        width=bar_width, color='#7f8c8d', label='Naive'
+    )
+    bars_ark = plt.bar(
+        x_positions, df_naive['Arkworks_ms'],
+        width=bar_width, color='#f39c12', label='Arkworks'
+    )
+    bars_opt = plt.bar(
+        [x + bar_width for x in x_positions], df_naive['Optimized_ms'],
+        width=bar_width, color='#27ae60', label='Optimized (sc_protocol_improved)'
+    )
+
+    for bar in list(bars_naive) + list(bars_ark) + list(bars_opt):
+        height = bar.get_height()
+        plt.text(bar.get_x() + bar.get_width() / 2., height * 1.02,
+                  f"{height:.3f}", ha='center', va='bottom', fontsize=8, fontweight='bold', rotation=60)
+
+    plt.yscale('log')
+    plt.xticks(list(x_positions), num_vars_labels, fontsize=9)
+    plt.xlabel('Run (with its randomly-drawn number of variables)', fontsize=12, fontweight='bold', labelpad=10)
+    plt.ylabel('Execution time (ms) - Log scale', fontsize=12, fontweight='bold', labelpad=10)
+    plt.title('D=1 Sanity Check: Naive vs Arkworks vs Optimized (5 runs)', fontsize=14, fontweight='bold', pad=15)
+    plt.grid(axis='y', linestyle='--', alpha=0.5)
+    plt.legend(fontsize=10)
+    plt.tight_layout()
+
+    naive_img = 'graphs/naive_vs_arkworks_vs_optimized.png'
+    os.makedirs("graphs", exist_ok=True)
+    plt.savefig(naive_img, dpi=300)
+    plt.close()
+    print(f"[OK] Generated d=1 sanity check bar chart: '{naive_img}'")
+
+    avg_naive = df_naive['Naive_ms'].mean()
+    avg_ark = df_naive['Arkworks_ms'].mean()
+    avg_opt = df_naive['Optimized_ms'].mean()
+    print(f"     Averages -- naive: {avg_naive:.3f} ms | arkworks: {avg_ark:.3f} ms | optimized: {avg_opt:.3f} ms")
+    print(f"     Speedup optimized vs naive: {avg_naive/avg_opt:.2f}x | vs arkworks: {avg_ark/avg_opt:.2f}x")
+else:
+    print(f"[WARN] '{naive_csv}' not found, skipping d=1 sanity check bar chart.")

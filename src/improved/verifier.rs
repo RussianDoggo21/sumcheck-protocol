@@ -33,14 +33,27 @@ impl Verifier {
     }
 
     /// Computes s_i(0) dynamically using the relation s_i(0) := C_{i-1} - s_i(1) (Step 3)
+    ///
+    /// NEW ! TO UNDERSTAND : for d=1, U_d_hat = [inf] only -- no classical finite point is
+    /// sent at all (Value(1..d-1) is empty for d=1), so s_i has length 1 and index 1 does
+    /// not exist; the general-case relation s_i(0) = c_{i-1} - s_i(1) cannot be evaluated
+    /// directly since s_i(1) was never sent. Instead, for a degree-<=1 polynomial
+    /// s(X) = aX + b with a = s_i[0] = s(inf) known, the ALWAYS-true sumcheck relation
+    /// c_{i-1} = s(0) + s(1) = b + (a + b) = a + 2b gives s(0) = b = (c_{i-1} - a) / 2
+    /// directly, with no need for an intermediate s_i(1) value at all.
     pub fn compute_s_i_0(&self, c_minus_1: Fr) -> Fr {
         let s_i = self
             .s_i_received
             .as_ref()
             .expect("No s_i polynomial received yet");
-        // In U_d_hat = [inf, 1, 2, ..., d-1], the evaluation s_i(1) is at index 1
-        let s_i_1 = s_i[1];
-        c_minus_1 - s_i_1
+        if self.d >= 2 {
+            let s_i_1 = s_i[1];
+            c_minus_1 - s_i_1
+        } else {
+            let a = s_i[0];
+            let two_inv = Fr::from(2u64).inverse().expect("2 is invertible in Fr");
+            (c_minus_1 - a) * two_inv
+        }
     }
 
     /// Computes C_i := s_i(r_i) by interpolating the received evaluations at point r_i,

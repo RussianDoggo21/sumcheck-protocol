@@ -764,3 +764,180 @@ pub fn bench_bigint_memory() {
 
     println!("\n[BIGINT MEM OK] results written to csv/bigint_memory.csv");
 }
+
+// =================================================================================================
+// NEW ! TO UNDERSTAND
+// 7. STDFR2::MUL_BB VS ARKWORKS FR*FR (plus mul_sb for reference)
+//    Isolates exactly how much of the BigInt-vs-arkworks gap seen in the curve overlays
+//    of Sections 1/5 is attributable to our hand-written Barrett reduction (mul_bb) being
+//    less mature than arkworks' assembly-optimized Montgomery multiplication -- as opposed
+//    to anything about the small-value technique itself, which is what Sanity Check "BigInt
+//    vanilla vs 1-sb vs sb-all" already isolates correctly (same field throughout).
+// =================================================================================================
+
+use crate::improved::bigint_field::StdFr2;
+
+pub fn bench_mul_bb_vs_arkworks() {
+    println!("==================================================");
+    println!("  STDFR2::MUL_BB VS ARKWORKS FR*FR (+ MUL_SB REFERENCE)  ");
+    println!("==================================================");
+
+    let mut rng = rand::thread_rng();
+    let size = 1_000_000;
+
+    let bigs_a: Vec<Fr> = (0..size).map(|_| Fr::rand(&mut rng)).collect();
+    let bigs_b: Vec<Fr> = (0..size).map(|_| Fr::rand(&mut rng)).collect();
+    let smalls: Vec<u64> = (0..size).map(|_| rand::Rng::gen_range(&mut rng, 0u64..(1u64 << 20))).collect();
+
+    let std_a: Vec<StdFr2> = bigs_a.iter().map(|f| StdFr2(f.into_bigint().0)).collect();
+    let std_b: Vec<StdFr2> = bigs_b.iter().map(|f| StdFr2(f.into_bigint().0)).collect();
+
+    // Correctness first: StdFr2::mul_bb must match arkworks' Fr*Fr exactly.
+    for i in 0..1000 {
+        let expected = (bigs_a[i] * bigs_b[i]).into_bigint().0;
+        assert_eq!(std_a[i].mul_bb(&std_b[i]).0, expected, "mul_bb mismatch");
+    }
+    println!("[OK] StdFr2::mul_bb matches arkworks Fr*Fr on 1,000 random pairs.");
+
+    let start = Instant::now();
+    let mut sink_ark = Fr::ZERO;
+    for i in 0..size { sink_ark += bigs_a[i] * bigs_b[i]; }
+    sink_ark = std::hint::black_box(sink_ark);
+    let t_arkworks = start.elapsed().as_secs_f64() * 1e9 / size as f64;
+
+    let start = Instant::now();
+    let mut sink_bb = StdFr2::zero();
+    for i in 0..size { sink_bb = sink_bb.add(&std_a[i].mul_bb(&std_b[i])); }
+    sink_bb = std::hint::black_box(sink_bb);
+    let t_mul_bb = start.elapsed().as_secs_f64() * 1e9 / size as f64;
+
+    let start = Instant::now();
+    let mut sink_sb = StdFr2::zero();
+    for i in 0..size { sink_sb = sink_sb.add(&std_a[i].mul_sb(smalls[i])); }
+    sink_sb = std::hint::black_box(sink_sb);
+    let t_mul_sb = start.elapsed().as_secs_f64() * 1e9 / size as f64;
+
+    println!("--- Timing (ns/op, {size} ops) ---");
+    println!("arkworks Fr*Fr (Montgomery, asm)     : {t_arkworks:8.2} ns");
+    println!("StdFr2::mul_bb (Barrett, standard)   : {t_mul_bb:8.2} ns");
+    println!("StdFr2::mul_sb (small-big, standard) : {t_mul_sb:8.2} ns");
+    println!(
+        "\nratio mul_bb / arkworks Fr*Fr : {:.3}x  (>1 => our big-big is slower)",
+        t_mul_bb / t_arkworks
+    );
+    println!("ratio mul_sb / arkworks Fr*Fr : {:.3}x", t_mul_sb / t_arkworks);
+
+    // assert! (not debug_assert!) -- keeps sink alive in --release, see the earlier
+    // debug_assert! post-mortem in this same file's history.
+    assert!(sink_ark != Fr::ZERO, "sink_ark optimized away");
+    assert!(sink_bb != StdFr2::zero(), "sink_bb optimized away");
+    assert!(sink_sb != StdFr2::zero(), "sink_sb optimized away");
+
+    let filename = "csv/mul_bb_vs_arkworks.csv";
+    let mut file = File::create(filename).expect("Unable to create mul_bb vs arkworks file");
+    writeln!(file, "Operation,Time_ns").unwrap();
+    writeln!(file, "arkworks Fr*Fr (Montgomery),{:.4}", t_arkworks).unwrap();
+    writeln!(file, "StdFr2::mul_bb (Barrett),{:.4}", t_mul_bb).unwrap();
+    writeln!(file, "StdFr2::mul_sb (small-big),{:.4}", t_mul_sb).unwrap();
+    file.flush().unwrap();
+
+    println!("\n[MUL_BB VS ARKWORKS OK] results written to csv/mul_bb_vs_arkworks.csv");
+}
+
+// =================================================================================================
+// NEW ! TO UNDERSTAND
+// 8. RAW_BARRETT_REDUCE ALGORITHMIC VARIANTS: mul_bb vs mul_bb_truncated vs mul_bb_mu4shift.
+//    Two attempts at reducing the operation count of raw_barrett_reduce (see
+//    bigint_field.rs's doc comments on StdFr2::mul_bb_truncated / mul_bb_mu4shift),
+//    both correctness-verified but both measured SLOWER than the baseline once
+//    averaged over multiple runs (single-shot ns-level timing was noisy enough to
+//    flip sign between runs, hence the averaging here). Kept as a benchmark, not
+//    silently dropped, because a well-verified negative result is itself evidence of
+//    engineering work -- see the report's discussion of this experiment.
+// =================================================================================================
+
+pub fn bench_barrett_variants() {
+    println!("==================================================");
+    println!("  RAW_BARRETT_REDUCE VARIANTS: mul_bb vs truncated vs mu4shift  ");
+    println!("==================================================");
+
+    let mut rng = rand::thread_rng();
+
+    // Correction d'abord, gros volume, contre arkworks comme verite.
+    let n = 300_000;
+    let mut mismatches_trunc = 0u64;
+    let mut mismatches_mu4 = 0u64;
+    for _ in 0..n {
+        let a = Fr::rand(&mut rng);
+        let b = Fr::rand(&mut rng);
+        let sa = StdFr2(a.into_bigint().0);
+        let sb = StdFr2(b.into_bigint().0);
+        let expected = (a * b).into_bigint().0;
+        if sa.mul_bb_truncated(&sb).0 != expected { mismatches_trunc += 1; }
+        if sa.mul_bb_mu4shift(&sb).0 != expected { mismatches_mu4 += 1; }
+    }
+    println!("[Correction] mul_bb_truncated : {mismatches_trunc}/{n} erreurs.");
+    println!("[Correction] mul_bb_mu4shift  : {mismatches_mu4}/{n} erreurs.");
+    assert_eq!(mismatches_trunc, 0);
+    assert_eq!(mismatches_mu4, 0);
+
+    // Timing, moyenne sur plusieurs runs (le bruit de mesure change le signe du
+    // resultat d'un run a l'autre a cette echelle -- voir la note ci-dessus).
+    let size = 1_000_000;
+    const NUM_TIMING_RUNS: usize = 7;
+    let mut totals = [0.0f64; 4]; // arkworks Fr*Fr, mul_bb, mul_bb_truncated, mul_bb_mu4shift
+
+    for _ in 0..NUM_TIMING_RUNS {
+        let bigs_a: Vec<Fr> = (0..size).map(|_| Fr::rand(&mut rng)).collect();
+        let bigs_b: Vec<Fr> = (0..size).map(|_| Fr::rand(&mut rng)).collect();
+        let std_a: Vec<StdFr2> = bigs_a.iter().map(|f| StdFr2(f.into_bigint().0)).collect();
+        let std_b: Vec<StdFr2> = bigs_b.iter().map(|f| StdFr2(f.into_bigint().0)).collect();
+
+        let start = Instant::now();
+        let mut sink_ark = Fr::ZERO;
+        for i in 0..size { sink_ark += bigs_a[i] * bigs_b[i]; }
+        sink_ark = std::hint::black_box(sink_ark);
+        totals[0] += start.elapsed().as_secs_f64() * 1e9 / size as f64;
+        assert!(sink_ark != Fr::ZERO);
+
+        let start = Instant::now();
+        let mut sink_bb = StdFr2::zero();
+        for i in 0..size { sink_bb = sink_bb.add(&std_a[i].mul_bb(&std_b[i])); }
+        sink_bb = std::hint::black_box(sink_bb);
+        totals[1] += start.elapsed().as_secs_f64() * 1e9 / size as f64;
+        assert!(sink_bb != StdFr2::zero());
+
+        let start = Instant::now();
+        let mut sink_trunc = StdFr2::zero();
+        for i in 0..size { sink_trunc = sink_trunc.add(&std_a[i].mul_bb_truncated(&std_b[i])); }
+        sink_trunc = std::hint::black_box(sink_trunc);
+        totals[2] += start.elapsed().as_secs_f64() * 1e9 / size as f64;
+        assert!(sink_trunc != StdFr2::zero());
+
+        let start = Instant::now();
+        let mut sink_mu4 = StdFr2::zero();
+        for i in 0..size { sink_mu4 = sink_mu4.add(&std_a[i].mul_bb_mu4shift(&std_b[i])); }
+        sink_mu4 = std::hint::black_box(sink_mu4);
+        totals[3] += start.elapsed().as_secs_f64() * 1e9 / size as f64;
+        assert!(sink_mu4 != StdFr2::zero());
+    }
+
+    let avg: Vec<f64> = totals.iter().map(|t| t / NUM_TIMING_RUNS as f64).collect();
+
+    println!("--- Moyenne sur {NUM_TIMING_RUNS} runs de {size} operations ---");
+    println!("arkworks Fr*Fr                   : {:8.2} ns", avg[0]);
+    println!("StdFr2::mul_bb (baseline)         : {:8.2} ns", avg[1]);
+    println!("StdFr2::mul_bb_truncated          : {:8.2} ns   ({:+.1}% vs baseline)", avg[2], 100.0*(1.0 - avg[2]/avg[1]));
+    println!("StdFr2::mul_bb_mu4shift           : {:8.2} ns   ({:+.1}% vs baseline)", avg[3], 100.0*(1.0 - avg[3]/avg[1]));
+
+    let filename = "csv/barrett_variants.csv";
+    let mut file = File::create(filename).expect("Unable to create barrett variants file");
+    writeln!(file, "Operation,Time_ns").unwrap();
+    writeln!(file, "arkworks Fr*Fr,{:.4}", avg[0]).unwrap();
+    writeln!(file, "StdFr2::mul_bb (baseline),{:.4}", avg[1]).unwrap();
+    writeln!(file, "StdFr2::mul_bb_truncated,{:.4}", avg[2]).unwrap();
+    writeln!(file, "StdFr2::mul_bb_mu4shift,{:.4}", avg[3]).unwrap();
+    file.flush().unwrap();
+
+    println!("\n[BARRETT VARIANTS OK] results written to csv/barrett_variants.csv");
+}

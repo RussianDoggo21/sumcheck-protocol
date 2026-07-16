@@ -10,6 +10,7 @@ run_seq_vs_parallel_csv = "csv/run_seq_vs_parallel.csv"  # NEW ! TO UNDERSTAND :
 csv_3d_memory_filename = "csv/benchmark_3d_memory_data.csv"
 bigint_csv = "csv/bigint_vanilla_vs_sb.csv"  # NEW ! TO UNDERSTAND : output of bench_bigint_vanilla_vs_sb (report Section 6.5) -- now swept across the SAME (Degree, Variables) grid as the main sweep, so it can be overlaid directly onto sumcheck_benchmark_curve_d{d}.png
 bigint_memory_csv = "csv/bigint_memory.csv"  # NEW ! TO UNDERSTAND : memory equivalent, output of bench_bigint_memory -- overlaid onto sumcheck_memory_curve_d{d}.png
+mul_bb_csv = "csv/mul_bb_vs_arkworks.csv"  # NEW ! TO UNDERSTAND : output of bench_mul_bb_vs_arkworks -- isolates StdFr2::mul_bb vs arkworks Fr*Fr (+ mul_sb reference)
 
 # NEW ! TO UNDERSTAND : loaded once, shared across every per-degree plot below, same
 # pattern as df_global for the main sweep.
@@ -393,3 +394,75 @@ if df_bigint_all is not None:
         print(f"[WARN] No BigInt data found for Variables = 14, skipping BigInt vanilla vs sb bar chart.")
 else:
     print(f"[WARN] '{bigint_csv}' not found, skipping BigInt vanilla vs sb bar chart.")
+
+# ==============================================================================
+# NEW ! TO UNDERSTAND
+# 7. STDFR2::MUL_BB VS ARKWORKS FR*FR (+ MUL_SB REFERENCE)
+#    Standalone bar chart isolating the single-multiplication cost gap discussed in the
+#    report -- our hand-written Barrett reduction (mul_bb) vs arkworks's assembly-optimized
+#    Montgomery multiplication -- with mul_sb shown alongside for reference (it sits at
+#    near parity with arkworks, unlike mul_bb).
+# ==============================================================================
+if os.path.exists(mul_bb_csv):
+    df_mulbb = pd.read_csv(mul_bb_csv)
+
+    plt.figure(figsize=(9, 6))
+    colors = ['#e67e22', '#c0392b', '#27ae60']
+
+    bars = plt.bar(df_mulbb['Operation'], df_mulbb['Time_ns'], color=colors[:len(df_mulbb)], width=0.55)
+
+    for bar in bars:
+        height = bar.get_height()
+        plt.text(bar.get_x() + bar.get_width() / 2., height + (height * 0.02),
+                  f"{height:.2f} ns", ha='center', va='bottom', fontweight='bold')
+
+    plt.ylabel('Execution Time (ns) for a single multiplication', fontsize=11, fontweight='bold')
+    plt.title("StdFr2::mul_bb vs arkworks Fr*Fr (+ mul_sb reference)", fontsize=13, fontweight='bold', pad=15)
+    plt.xticks(rotation=10, ha='right', fontsize=10)
+    plt.grid(axis='y', linestyle='--', alpha=0.5)
+    plt.ylim(0, df_mulbb['Time_ns'].max() * 1.2)
+    plt.tight_layout()
+
+    mulbb_img = 'graphs/mul_bb_vs_arkworks_benchmark.png'
+    os.makedirs("graphs", exist_ok=True)
+    plt.savefig(mulbb_img, dpi=300)
+    plt.close()
+    print(f"[OK] Generated mul_bb vs arkworks bar chart: '{mulbb_img}'")
+else:
+    print(f"[WARN] '{mul_bb_csv}' not found, skipping mul_bb vs arkworks bar chart.")
+
+# ==============================================================================
+# NEW ! TO UNDERSTAND
+# 8. RAW_BARRETT_REDUCE ALGORITHMIC VARIANTS (bench_barrett_variants)
+#    mul_bb (baseline) vs mul_bb_truncated vs mul_bb_mu4shift vs arkworks Fr*Fr for
+#    reference. Both variants were correctness-verified but measured SLOWER than the
+#    baseline -- this bar chart documents that negative (but well-verified) result.
+# ==============================================================================
+barrett_variants_csv = "csv/barrett_variants.csv"
+if os.path.exists(barrett_variants_csv):
+    df_barrett = pd.read_csv(barrett_variants_csv)
+
+    plt.figure(figsize=(10, 6))
+    colors = ['#e67e22', '#2980b9', '#c0392b', '#8e44ad']
+
+    bars = plt.bar(df_barrett['Operation'], df_barrett['Time_ns'], color=colors[:len(df_barrett)], width=0.6)
+
+    for bar in bars:
+        height = bar.get_height()
+        plt.text(bar.get_x() + bar.get_width() / 2., height + (height * 0.02),
+                  f"{height:.2f} ns", ha='center', va='bottom', fontweight='bold')
+
+    plt.ylabel('Execution Time (ns) for a single multiplication', fontsize=11, fontweight='bold')
+    plt.title('raw_barrett_reduce: attempted algorithmic optimizations (both regressed)', fontsize=12, fontweight='bold', pad=15)
+    plt.xticks(rotation=12, ha='right', fontsize=9)
+    plt.grid(axis='y', linestyle='--', alpha=0.5)
+    plt.ylim(0, df_barrett['Time_ns'].max() * 1.2)
+    plt.tight_layout()
+
+    barrett_img = 'graphs/barrett_variants_benchmark.png'
+    os.makedirs("graphs", exist_ok=True)
+    plt.savefig(barrett_img, dpi=300)
+    plt.close()
+    print(f"[OK] Generated Barrett variants bar chart: '{barrett_img}'")
+else:
+    print(f"[WARN] '{barrett_variants_csv}' not found, skipping Barrett variants bar chart.")
